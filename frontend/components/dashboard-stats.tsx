@@ -51,7 +51,7 @@ export function DashboardStats({ loading, stats }: StatsProps) {
             <p className="text-sm text-text-secondary font-medium">{card.label}</p>
             <card.icon size={16} className="text-text-tertiary" />
           </div>
-          <h3 className="text-3xl font-semibold text-text-primary tabular-nums tracking-tight text-mono">
+          <h3 className="text-3xl font-medium text-text-primary tabular-nums tracking-tight text-mono">
             {card.value}
           </h3>
           <div className="mt-3 flex items-center justify-between text-xs">

@@ -41,7 +41,7 @@ export default function RegistrationForm({ onSubmit, onBack }) {
         </header>
 
         <main className="hero-content fade-in" style={{ padding: '1rem 0 4rem 0' }}>
-          <h2 className="font-display" style={{ fontSize: '1.75rem', fontWeight: 600, marginBottom: '0.4rem' }}>
+          <h2 className="text-h2" style={{ marginBottom: '0.4rem' }}>
             Register Employee
           </h2>
           <p className="hero-subtitle" style={{ marginBottom: '1.5rem' }}>

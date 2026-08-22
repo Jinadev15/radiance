@@ -32,7 +32,7 @@ export default function ResultScreen({ result, error, actionType, onReset }) {
               </svg>
             </div>
 
-            <h2 className="font-display" style={{ fontSize: '2rem', fontWeight: 600, color: 'var(--color-danger)', marginBottom: '1rem' }}>
+            <h2 className="text-h2" style={{ color: 'var(--color-danger)', marginBottom: '1rem' }}>
               Verification Failed
             </h2>
 
@@ -78,7 +78,7 @@ export default function ResultScreen({ result, error, actionType, onReset }) {
             )}
           </div>
 
-          <h2 className="font-display" style={{ fontSize: '2.5rem', fontWeight: 600, marginBottom: '0.5rem' }}>
+          <h2 className="text-h1-hero" style={{ marginBottom: '0.5rem' }}>
             {isQueued ? 'Saved — Pending Sync' : name}
           </h2>
 

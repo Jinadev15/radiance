@@ -85,7 +85,7 @@ function App() {
           registrationData.phone,
           registrationData.aadhaar,
           registrationData.dob,
-          images[0],
+          images,
           { consent: registrationData.consent }
         );
       } else if (isMyAttendance) {

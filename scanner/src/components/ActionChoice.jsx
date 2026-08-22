@@ -1,4 +1,5 @@
 import React from 'react';
+import { LogIn, LogOut, History, Flag } from 'lucide-react';
 
 export default function ActionChoice({ onChoice, onBack }) {
   return (
@@ -13,29 +14,41 @@ export default function ActionChoice({ onChoice, onBack }) {
         </header>
 
         <main className="hero-content fade-in" style={{ padding: '2rem 0' }}>
-          <h2 className="font-display" style={{ fontSize: '2rem', fontWeight: 600, marginBottom: '0.5rem' }}>
+          <h2 className="text-h2" style={{ marginBottom: '0.5rem' }}>
             Select Action
           </h2>
 
           <div className="action-cards-grid" style={{ marginTop: '2.5rem' }}>
-            <button className="action-card" onClick={() => onChoice('clock-in')} style={{ textAlign: 'center', padding: '3rem 2rem' }}>
+            <button className="action-card" onClick={() => onChoice('clock-in')} style={{ padding: '2.5rem 2rem' }}>
+              <div className="action-card-icon action-card-icon--primary" style={{ marginBottom: '1.25rem' }}>
+                <LogIn size={26} strokeWidth={1.75} />
+              </div>
               <h3 className="action-card-title" style={{ fontSize: '1.75rem' }}>Clock In</h3>
               <p className="action-card-desc">Record start of shift</p>
             </button>
 
-            <button className="action-card" onClick={() => onChoice('clock-out')} style={{ textAlign: 'center', padding: '3rem 2rem' }}>
+            <button className="action-card" onClick={() => onChoice('clock-out')} style={{ padding: '2.5rem 2rem' }}>
+              <div className="action-card-icon action-card-icon--primary" style={{ marginBottom: '1.25rem' }}>
+                <LogOut size={26} strokeWidth={1.75} />
+              </div>
               <h3 className="action-card-title" style={{ fontSize: '1.75rem' }}>Clock Out</h3>
               <p className="action-card-desc">Record end of shift</p>
             </button>
           </div>
 
           <div className="action-cards-grid" style={{ marginTop: '1.25rem' }}>
-            <button className="action-card" onClick={() => onChoice('my-attendance')} style={{ textAlign: 'center', padding: '1.75rem 1.5rem' }}>
+            <button className="action-card" onClick={() => onChoice('my-attendance')} style={{ padding: '1.5rem' }}>
+              <div className="action-card-icon" style={{ marginBottom: '1rem' }}>
+                <History size={20} strokeWidth={1.75} />
+              </div>
               <h3 className="action-card-title" style={{ fontSize: '1.15rem' }}>My Attendance</h3>
               <p className="action-card-desc">See your last 7 days</p>
             </button>
 
-            <button className="action-card" onClick={() => onChoice('report-issue')} style={{ textAlign: 'center', padding: '1.75rem 1.5rem' }}>
+            <button className="action-card" onClick={() => onChoice('report-issue')} style={{ padding: '1.5rem' }}>
+              <div className="action-card-icon" style={{ marginBottom: '1rem' }}>
+                <Flag size={20} strokeWidth={1.75} />
+              </div>
               <h3 className="action-card-title" style={{ fontSize: '1.15rem' }}>Report an Issue</h3>
               <p className="action-card-desc">Missed or incorrect scan</p>
             </button>

@@ -1,21 +1,34 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { ShieldCheck, UserCheck, Clock, RefreshCw } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { ShieldCheck, AlertCircle, Clock, RefreshCw } from 'lucide-react';
 import api from '@/lib/api';
+import type { AttendanceLog } from '@/lib/types';
 
 export function DashboardLiveFeed() {
-  const [logs, setLogs] = useState<any[]>([]);
+  const [logs, setLogs] = useState<AttendanceLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  // Guards against out-of-order responses: the 10s poll can overlap with a
+  // manual "Sync" click or a slow response arriving after a faster later
+  // one, and without this the stale response's data could overwrite fresher
+  // data that already rendered.
+  const requestSeq = useRef(0);
 
   const fetchTodayLogs = async () => {
+    const seq = ++requestSeq.current;
     try {
       const data = await api.getTodayAttendance();
+      if (seq !== requestSeq.current) return; // a newer request already resolved
       setLogs(data || []);
+      setError(null);
     } catch (err) {
-      console.warn('Live feed fetch failed', err);
+      if (seq !== requestSeq.current) return;
+      // Previously swallowed entirely — the feed just quietly stopped
+      // updating with no indication anything had failed.
+      setError(err instanceof Error ? err.message : 'Failed to load live feed');
     } finally {
-      setLoading(false);
+      if (seq === requestSeq.current) setLoading(false);
     }
   };
 
@@ -43,7 +56,11 @@ export function DashboardLiveFeed() {
         </button>
       </div>
 
-      {logs.length === 0 ? (
+      {error ? (
+        <div className="badge-danger rounded-lg p-3 text-sm flex items-center gap-2">
+          <AlertCircle size={14} /> {error}
+        </div>
+      ) : logs.length === 0 ? (
         <div className="py-8 text-center border border-dashed border-border rounded-lg">
           <Clock size={24} className="mx-auto text-text-tertiary mb-2" />
           <p className="text-sm text-text-secondary font-medium">No clock-ins recorded today</p>

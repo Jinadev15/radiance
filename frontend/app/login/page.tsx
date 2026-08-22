@@ -1,12 +1,31 @@
 'use client';
 
-import React, { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import React, { Suspense, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Loader2, LogIn, AlertCircle } from 'lucide-react';
 import api from '@/lib/api';
 
+// Only redirect to a path proxy.ts itself would have sent the user *from*
+// — never trust `next` as an arbitrary destination. It's a query param
+// anyone can hand-craft, so even though proxy.ts only ever writes a bare
+// pathname into it, this still guards against `?next=//evil.com` or
+// similar protocol-relative tricks landing here directly.
+function safeNextPath(value: string | null): string {
+  if (value && value.startsWith('/dashboard') && !value.startsWith('//')) return value;
+  return '/dashboard';
+}
+
 export default function LoginPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-background" />}>
+      <LoginPageInner />
+    </Suspense>
+  );
+}
+
+function LoginPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -18,7 +37,7 @@ export default function LoginPage() {
     setError(null);
     try {
       await api.login(email, password);
-      router.push('/dashboard');
+      router.push(safeNextPath(searchParams.get('next')));
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed.');
@@ -32,7 +51,7 @@ export default function LoginPage() {
       <div className="w-full max-w-sm">
         <div className="flex flex-col items-center mb-8">
           <img src="/logo.png" alt="Radiance" className="w-12 h-12 rounded-lg object-cover mb-4" />
-          <h1 className="text-2xl text-display text-text-primary">Radiance</h1>
+          <h1 className="text-2xl text-display font-semibold text-text-primary">Radiance</h1>
           <p className="text-text-secondary text-sm mt-1">Sign in to the attendance dashboard</p>
         </div>
 

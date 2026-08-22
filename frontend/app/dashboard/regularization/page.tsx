@@ -3,25 +3,33 @@
 import React, { useState, useEffect } from 'react';
 import { ClipboardEdit, Check, X, Loader2, Clock } from 'lucide-react';
 import api from '@/lib/api';
+import { useToast } from '@/hooks/use-toast';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { buttonVariants } from '@/components/ui/button';
 
 interface RegRequest {
   _id: string;
   employee: { name: string; employeeId: string } | null;
   date: string;
   reason: string;
-  requestedClockIn?: string;
-  requestedClockOut?: string;
+  requestedClockIn?: string | null;
+  requestedClockOut?: string | null;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
   reviewedBy?: { name: string } | null;
   createdAt: string;
 }
 
 export default function RegularizationPage() {
+  const { toast } = useToast();
   const [requests, setRequests] = useState<RegRequest[]>([]);
   const [filter, setFilter] = useState<'PENDING' | 'ALL'>('PENDING');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [rejectTarget, setRejectTarget] = useState<RegRequest | null>(null);
 
   const fetchData = async () => {
     setLoading(true);
@@ -41,9 +49,10 @@ export default function RegularizationPage() {
     setProcessingId(id);
     try {
       await api.reviewRegularizationRequest(id, status);
+      toast({ title: status === 'APPROVED' ? 'Request approved' : 'Request rejected' });
       fetchData();
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to update request');
+      toast({ variant: 'destructive', title: 'Failed to update request', description: err instanceof Error ? err.message : undefined });
     } finally {
       setProcessingId(null);
     }
@@ -55,7 +64,7 @@ export default function RegularizationPage() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-text-primary text-display">Regularization Requests</h1>
+          <h1 className="text-2xl font-semibold text-text-primary text-display">Regularization Requests</h1>
           <p className="text-text-secondary">Employee-reported missed or incorrect scans, filed from the kiosk</p>
         </div>
         <div className="flex gap-2">
@@ -64,7 +73,7 @@ export default function RegularizationPage() {
         </div>
       </div>
 
-      {error && <div className="bg-danger-muted border border-danger-border rounded-xl p-4"><p className="text-danger text-sm">{error}</p></div>}
+      {error && <div className="badge-danger rounded-xl p-4"><p className="text-sm">{error}</p></div>}
 
       {loading ? (
         <div className="flex justify-center py-12"><Loader2 size={28} className="animate-spin text-accent" /></div>
@@ -101,7 +110,7 @@ export default function RegularizationPage() {
                       <Check size={13} /> Approve
                     </button>
                     <button
-                      onClick={() => handleReview(req._id, 'REJECTED')}
+                      onClick={() => setRejectTarget(req)}
                       disabled={processingId === req._id}
                       className="flex items-center gap-1.5 px-3 py-1.5 badge-danger rounded-lg text-xs font-medium disabled:opacity-50"
                     >
@@ -118,6 +127,24 @@ export default function RegularizationPage() {
       <p className="text-xs text-text-tertiary">
         Approving a request doesn't change the attendance record automatically — correct the actual clock-in/out time from the Attendance page after approving.
       </p>
+
+      <AlertDialog open={!!rejectTarget} onOpenChange={open => !open && setRejectTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reject {rejectTarget?.employee?.name || 'this'}&apos;s request?</AlertDialogTitle>
+            <AlertDialogDescription>They reported: &quot;{rejectTarget?.reason}&quot;. Rejecting tells them this won&apos;t be corrected.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => { if (rejectTarget) handleReview(rejectTarget._id, 'REJECTED'); setRejectTarget(null); }}
+              className={buttonVariants({ variant: 'destructive' })}
+            >
+              Reject
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

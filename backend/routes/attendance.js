@@ -53,8 +53,11 @@ router.get('/', auth,
 
       res.json(logs);
     } catch (error) {
-      console.warn('[Attendance Warning]', error.message);
-      res.json([]);
+      // A real query failure and "no records exist" looked identical to
+      // the frontend before this — both rendered as an empty table with no
+      // indication anything had actually gone wrong.
+      console.error('[Attendance/GET]', error.message);
+      res.status(500).json({ error: 'Failed to fetch attendance records' });
     }
   }
 );
@@ -74,8 +77,8 @@ router.get('/today', auth, async (req, res) => {
       .sort({ clockInTime: -1 });
     res.json(logs);
   } catch (error) {
-    console.warn('[Attendance Today Warning]', error.message);
-    res.json([]);
+    console.error('[Attendance/Today]', error.message);
+    res.status(500).json({ error: 'Failed to fetch today\'s attendance' });
   }
 });
 

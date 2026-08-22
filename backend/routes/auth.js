@@ -1,5 +1,6 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 const mongoose = require('mongoose');
 const { body, param, validationResult } = require('express-validator');
 const User = require('../models/User');
@@ -10,6 +11,29 @@ const { requireAdmin } = auth;
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) throw new Error('JWT_SECRET environment variable is required');
+
+// SameSite=Strict only works when the dashboard and this API share a
+// registrable domain (true on localhost regardless of port, which is why
+// this was never caught in dev). If FRONTEND_URL and this API end up on
+// genuinely separate domains in production (e.g. a Vercel-hosted dashboard
+// calling a Render-hosted API), Strict silently stops the browser from ever
+// sending the cookie at all — nothing is broken, auth just always 401s.
+// Set COOKIE_CROSS_SITE=true in that deployment shape; SameSite=None then
+// requires Secure, so it's forced on regardless of NODE_ENV in that case.
+const CROSS_SITE = process.env.COOKIE_CROSS_SITE === 'true';
+const COOKIE_OPTIONS = {
+  httpOnly: true,
+  sameSite: CROSS_SITE ? 'none' : 'strict',
+  secure: CROSS_SITE || process.env.NODE_ENV === 'production',
+  path: '/',
+};
+
+// A valid-format bcrypt hash of a value nobody will ever type, used only
+// to burn roughly the same amount of time as a real comparison would — a
+// nonexistent email otherwise returns near-instantly (no bcrypt round-trip
+// at all) while a real one takes the full hash-compare time, which is a
+// timing oracle for enumerating dashboard login emails.
+const DUMMY_HASH = '$2a$10$CwTycUXWue0Thq9StjUM0uJ8Q0/hz7NqLZW6.HTX4nqSc3/Q4WlOe';
 
 // POST /api/auth/login
 router.post('/login',
@@ -27,23 +51,17 @@ router.post('/login',
       // If MongoDB is connected, query the User collection
       if (mongoose.connection.readyState === 1) {
         const user = await User.findOne({ email, isActive: true });
-        if (user) {
-          const isMatch = await user.comparePassword(password);
-          if (isMatch) {
-            const payload = { user: { id: user.id, role: user.role, workLocation: user.workLocation || null } };
-            const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
-            // httpOnly so an XSS payload can't read the session token off
-            // document.cookie — the browser attaches it automatically on
-            // same-site requests, the dashboard JS never touches it directly.
-            res.cookie('radiance_token', token, {
-              httpOnly: true,
-              sameSite: 'strict',
-              secure: process.env.NODE_ENV === 'production',
-              maxAge: 7 * 24 * 60 * 60 * 1000,
-              path: '/',
-            });
-            return res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role, workLocation: user.workLocation } });
-          }
+        // Always run a bcrypt compare, real or dummy, so a nonexistent
+        // email doesn't return measurably faster than a real one.
+        const isMatch = user ? await user.comparePassword(password) : await bcrypt.compare(password, DUMMY_HASH);
+        if (user && isMatch) {
+          const payload = { user: { id: user.id, role: user.role, workLocation: user.workLocation || null } };
+          const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+          // httpOnly so an XSS payload can't read the session token off
+          // document.cookie — the browser attaches it automatically on
+          // same-site requests, the dashboard JS never touches it directly.
+          res.cookie('radiance_token', token, { ...COOKIE_OPTIONS, maxAge: 7 * 24 * 60 * 60 * 1000 });
+          return res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role, workLocation: user.workLocation } });
         }
       }
 
@@ -58,7 +76,7 @@ router.post('/login',
 // POST /api/auth/logout — clears the session cookie server-side (client JS
 // can't touch an httpOnly cookie, so this is the only way to log out).
 router.post('/logout', (req, res) => {
-  res.clearCookie('radiance_token', { path: '/' });
+  res.clearCookie('radiance_token', COOKIE_OPTIONS);
   res.json({ success: true });
 });
 

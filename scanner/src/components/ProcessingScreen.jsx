@@ -28,7 +28,7 @@ export default function ProcessingScreen() {
       <div className="scanner-container flex flex-col min-h-screen">
         <main className="hero-content fade-in" style={{ flex: 1 }}>
           <div className="processing-spinner" role="status" aria-label="Processing" />
-          <h2 className="font-display" style={{ fontSize: '2rem', fontWeight: 600, marginBottom: '0.75rem' }}>
+          <h2 className="text-h2" style={{ marginBottom: '0.75rem' }}>
             Processing
           </h2>
           <p className="processing-message" aria-live="polite">{MESSAGES[messageIndex]}</p>

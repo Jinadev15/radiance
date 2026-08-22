@@ -103,7 +103,7 @@ export default function AttendancePage() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-text-primary text-display">Attendance Logs</h1>
+          <h1 className="text-2xl font-semibold text-text-primary text-display">Attendance Logs</h1>
           <p className="text-text-secondary">{logs.length} records for {selectedDate}</p>
         </div>
         <button

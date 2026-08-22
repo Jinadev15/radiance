@@ -134,7 +134,7 @@ export default function SitesPage() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-text-primary text-display">Sites</h1>
+          <h1 className="text-2xl font-semibold text-text-primary text-display">Sites</h1>
           <p className="text-text-secondary">{sites.length} client location{sites.length !== 1 ? 's' : ''} — geofence radius enforced at clock-in</p>
         </div>
         {!showForm && (
@@ -162,39 +162,39 @@ export default function SitesPage() {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="text-sm font-medium text-text-secondary">Site Name</label>
-              <input required value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+              <label htmlFor="site-name" className="text-sm font-medium text-text-secondary">Site Name</label>
+              <input id="site-name" required value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                 placeholder="e.g. Ambattur Client Campus" className="input-base w-full mt-1 p-3" />
             </div>
             <div>
-              <label className="text-sm font-medium text-text-secondary">Address</label>
-              <input required value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))}
+              <label htmlFor="site-address" className="text-sm font-medium text-text-secondary">Address</label>
+              <input id="site-address" required value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))}
                 placeholder="e.g. Ambattur Industrial Estate, Chennai" className="input-base w-full mt-1 p-3" />
             </div>
             <div>
-              <label className="text-sm font-medium text-text-secondary">Latitude</label>
-              <input required type="number" step="any" value={form.latitude} onChange={e => setForm(f => ({ ...f, latitude: e.target.value }))}
+              <label htmlFor="site-lat" className="text-sm font-medium text-text-secondary">Latitude</label>
+              <input id="site-lat" required type="number" step="any" value={form.latitude} onChange={e => setForm(f => ({ ...f, latitude: e.target.value }))}
                 placeholder="13.0827" className="input-base w-full mt-1 p-3 text-mono" />
             </div>
             <div>
-              <label className="text-sm font-medium text-text-secondary">Longitude</label>
-              <input required type="number" step="any" value={form.longitude} onChange={e => setForm(f => ({ ...f, longitude: e.target.value }))}
+              <label htmlFor="site-lng" className="text-sm font-medium text-text-secondary">Longitude</label>
+              <input id="site-lng" required type="number" step="any" value={form.longitude} onChange={e => setForm(f => ({ ...f, longitude: e.target.value }))}
                 placeholder="80.2707" className="input-base w-full mt-1 p-3 text-mono" />
             </div>
             <div>
-              <label className="text-sm font-medium text-text-secondary">Geofence Radius (meters)</label>
-              <input required type="number" min={50} max={5000} value={form.radiusMeters} onChange={e => setForm(f => ({ ...f, radiusMeters: e.target.value }))}
+              <label htmlFor="site-radius" className="text-sm font-medium text-text-secondary">Geofence Radius (meters)</label>
+              <input id="site-radius" required type="number" min={50} max={5000} value={form.radiusMeters} onChange={e => setForm(f => ({ ...f, radiusMeters: e.target.value }))}
                 className="input-base w-full mt-1 p-3 text-mono" />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="text-sm font-medium text-text-secondary">Shift Start</label>
-                <input required type="time" value={form.shiftStart} onChange={e => setForm(f => ({ ...f, shiftStart: e.target.value }))}
+                <label htmlFor="site-shift-start" className="text-sm font-medium text-text-secondary">Shift Start</label>
+                <input id="site-shift-start" required type="time" value={form.shiftStart} onChange={e => setForm(f => ({ ...f, shiftStart: e.target.value }))}
                   className="input-base w-full mt-1 p-3" />
               </div>
               <div>
-                <label className="text-sm font-medium text-text-secondary">Shift End</label>
-                <input required type="time" value={form.shiftEnd} onChange={e => setForm(f => ({ ...f, shiftEnd: e.target.value }))}
+                <label htmlFor="site-shift-end" className="text-sm font-medium text-text-secondary">Shift End</label>
+                <input id="site-shift-end" required type="time" value={form.shiftEnd} onChange={e => setForm(f => ({ ...f, shiftEnd: e.target.value }))}
                   className="input-base w-full mt-1 p-3" />
               </div>
             </div>

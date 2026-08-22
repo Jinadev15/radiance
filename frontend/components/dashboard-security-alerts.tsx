@@ -1,24 +1,33 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { ShieldAlert } from 'lucide-react';
+import { ShieldAlert, AlertCircle } from 'lucide-react';
 import api from '@/lib/api';
-
-interface SpoofAttempt {
-  _id: string;
-  targetedEmployee: { name: string; employeeId: string } | null;
-  workLocation: { name: string } | null;
-  action: 'CLOCK_IN' | 'CLOCK_OUT';
-  livenessDetails: string;
-  createdAt: string;
-}
+import type { SpoofAttempt } from '@/lib/types';
 
 export function DashboardSecurityAlerts() {
   const [attempts, setAttempts] = useState<SpoofAttempt[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    api.getSpoofAttempts(5).then(setAttempts).catch(() => {});
+    api.getSpoofAttempts(5)
+      .then(setAttempts)
+      .catch(err => {
+        // This panel used to just stay invisible on a failed fetch — for a
+        // security-alerts widget specifically, "no alerts shown" and
+        // "couldn't check for alerts" need to look different, or a real
+        // failure reads as reassurance that nothing's wrong.
+        setError(err instanceof Error ? err.message : 'Failed to load security alerts');
+      });
   }, []);
+
+  if (error) {
+    return (
+      <div className="badge-danger rounded-lg p-3 text-sm flex items-center gap-2 animate-enter-up">
+        <AlertCircle size={14} /> Couldn&apos;t check for spoof attempts: {error}
+      </div>
+    );
+  }
 
   if (attempts.length === 0) return null;
 

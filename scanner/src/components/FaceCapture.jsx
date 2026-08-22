@@ -94,8 +94,8 @@ export default function FaceCapture({ onCapture, onBack }) {
     return (
       <div className="camera-wrapper">
         <div style={{ textAlign: 'center', padding: '2rem', maxWidth: '420px' }}>
-          <h2 className="font-display" style={{ fontSize: '2rem', color: '#fff', marginBottom: '1rem' }}>Camera Unavailable</h2>
-          <p style={{ color: 'rgba(255,255,255,0.7)', marginBottom: '2rem' }}>{errorMsg}</p>
+          <h2 className="text-h2" style={{ color: 'var(--color-text-primary)', marginBottom: '1rem' }}>Camera Unavailable</h2>
+          <p style={{ color: 'var(--color-text-secondary)', marginBottom: '2rem' }}>{errorMsg}</p>
           <button className="btn-secondary" onClick={onBack}>← Go Back</button>
         </div>
       </div>

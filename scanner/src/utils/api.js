@@ -47,11 +47,14 @@ export async function clockOut(images, latitude, longitude) {
 // Registration is NOT queued offline — it needs a live duplicate-face check
 // against the server, so it fails clearly and asks the employee to retry
 // once connectivity is back, rather than silently enrolling unverified.
-export async function registerEmployee(name, phone, nationalId, dateOfBirth, image, extra = {}) {
+// `images` is the same 2-frame capture used for clock-in/out — passing
+// both (not just the first) lets the backend run a real liveness check on
+// enrollment too, not just on later clock-ins.
+export async function registerEmployee(name, phone, nationalId, dateOfBirth, images, extra = {}) {
   const response = await fetch(`${API_URL}/v1/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, phone, nationalId, dateOfBirth, imageBase64: image, ...extra })
+    body: JSON.stringify({ name, phone, nationalId, dateOfBirth, images, ...extra })
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || data.msg || data.message || 'Registration failed');

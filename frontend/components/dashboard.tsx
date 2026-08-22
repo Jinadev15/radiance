@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 import { DashboardStats } from './dashboard-stats';
 import { DashboardCharts } from './dashboard-charts';
@@ -14,14 +14,23 @@ export function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState(EMPTY_STATS);
+  // A ref (not a per-call local closure) so both the initial effect and the
+  // manual Retry click share one mounted flag — calling fetchData() directly
+  // from the button used to discard its own cleanup closure, so a fetch
+  // in flight when the user navigated away would still call setState after
+  // unmount.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const fetchData = () => {
-    let mounted = true;
     setError(null);
     api.getStats()
-      .then(data => { if (mounted) { setStats(data); setLoading(false); } })
+      .then(data => { if (mountedRef.current) { setStats(data); setLoading(false); } })
       .catch(err => {
-        if (!mounted) return;
+        if (!mountedRef.current) return;
         // A genuinely empty account and a failed request should not look
         // the same — zeroing the stats silently on error was indistinguishable
         // from "0 employees registered." Surface the failure instead.
@@ -29,7 +38,6 @@ export function Dashboard() {
         setStats(EMPTY_STATS);
         setLoading(false);
       });
-    return () => { mounted = false; };
   };
 
   useEffect(fetchData, []);

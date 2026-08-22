@@ -76,8 +76,11 @@ router.get('/stats', auth, async (req, res) => {
 
     res.status(200).json({ totalEmployees, presentToday, absent, onTime, late, bySite });
   } catch (error) {
-    console.warn('[Stats Warning]', error.message);
-    res.status(200).json({ totalEmployees: 0, presentToday: 0, absent: 0, onTime: 0, late: 0, bySite: [] });
+    // A genuine query failure and "0 employees registered" rendered
+    // identically to the dashboard before this — no way to tell a broken
+    // stats query apart from a real empty account.
+    console.error('[Stats/GET]', error.message);
+    res.status(500).json({ error: 'Failed to fetch dashboard stats' });
   }
 });
 

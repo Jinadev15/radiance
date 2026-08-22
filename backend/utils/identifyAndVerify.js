@@ -15,9 +15,22 @@ const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
 
 // Throws a { status, error } object on any failure so routes can respond
 // directly from the catch block without re-deriving status codes.
+// Minimum frames required to run the real anti-spoof check. The ML
+// service's motion-detection (the check that actually distinguishes a live
+// face from a held-up printed photo) only runs when it receives 2+ frames —
+// with fewer than that, only the much weaker per-frame texture/glare
+// heuristic applies. Since these endpoints are unauthenticated, a direct
+// API caller (not just the kiosk app) could otherwise submit a single
+// frame and skip the real check entirely; this is enforced server-side so
+// the client can't opt out of it.
+const MIN_LIVENESS_FRAMES = 2;
+
 async function identifyAndVerify(images, action) {
   if (!images || images.length === 0) {
     throw { status: 400, error: 'Face image is required' };
+  }
+  if (images.length < MIN_LIVENESS_FRAMES) {
+    throw { status: 400, error: 'At least two frames are required to verify liveness. Please try scanning again.' };
   }
 
   // 1. Extract embedding from the first frame

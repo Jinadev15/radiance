@@ -8,8 +8,8 @@ const corsOptions = {
 
     const allowedOrigins = [
       "http://localhost:3000", // Next.js dashboard (dev)
-      "http://localhost:3001", // Alternative dashboard port
-      "http://localhost:5173", // Vite scanner kiosk (dev)
+      "http://localhost:3001", // Vite scanner kiosk (dev) — see scanner/vite.config.js's explicit port override
+      "http://localhost:5173", // Vite's own default port, kept in case the kiosk is ever run without the override
       "http://127.0.0.1:3000",
       "http://127.0.0.1:3001",
       "http://127.0.0.1:5173",

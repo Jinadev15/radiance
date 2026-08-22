@@ -28,6 +28,12 @@ router.get('/:id', auth,
     try {
       const location = await WorkLocation.findById(req.params.id);
       if (!location) return res.status(404).json({ error: 'Location not found' });
+      // GET / already scopes supervisors to their own site — this direct-ID
+      // lookup needs the same check, or a supervisor can read any other
+      // site's exact coordinates/geofence radius just by guessing/iterating IDs.
+      if (req.user.role === 'supervisor' && String(location._id) !== String(req.user.workLocation)) {
+        return res.status(403).json({ error: 'Not authorized to view this site.' });
+      }
       res.json(location);
     } catch (error) {
       res.status(500).json({ error: 'Failed to fetch location' });

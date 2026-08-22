@@ -15,7 +15,7 @@ interface Site { _id: string; name: string; }
 interface Contractor {
   _id: string; name: string; contactPhone?: string;
   workLocation?: { _id: string; name: string } | null;
-  headcountCap?: number; currentHeadcount: number;
+  headcountCap?: number | null; currentHeadcount: number;
 }
 
 export default function BillingPage() {
@@ -122,7 +122,7 @@ export default function BillingPage() {
   return (
     <div className="p-6 space-y-8">
       <div>
-        <h1 className="text-2xl font-bold text-text-primary text-display">Services & Contractors</h1>
+        <h1 className="text-2xl font-semibold text-text-primary text-display">Services & Contractors</h1>
         <p className="text-text-secondary">What client hours get billed against, and any sub-agency staffing caps</p>
       </div>
 
@@ -142,7 +142,8 @@ export default function BillingPage() {
           {services.length === 0 && <p className="text-text-tertiary text-sm">No services yet — add "Security", "Housekeeping", "Maintenance", etc.</p>}
         </div>
         <form onSubmit={handleAddService} className="flex gap-2">
-          <input value={newService} onChange={e => setNewService(e.target.value)} placeholder="e.g. Housekeeping"
+          <label htmlFor="new-service" className="sr-only">New service name</label>
+          <input id="new-service" value={newService} onChange={e => setNewService(e.target.value)} placeholder="e.g. Housekeeping"
             className="input-base p-2.5 flex-1 max-w-xs text-sm" />
           <button disabled={savingService} type="submit" className="flex items-center gap-1.5 px-4 py-2 bg-accent/90 hover:bg-accent text-on-accent rounded-lg text-sm font-medium disabled:opacity-50">
             {savingService ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Add
@@ -164,16 +165,20 @@ export default function BillingPage() {
 
         {showContractorForm && (
           <form onSubmit={handleAddContractor} className="grid grid-cols-1 md:grid-cols-2 gap-3 p-4 bg-surface-elevated rounded-lg">
-            <input required value={contractorForm.name} onChange={e => setContractorForm(f => ({ ...f, name: e.target.value }))}
+            <label htmlFor="contractor-name" className="sr-only">Contractor name</label>
+            <input id="contractor-name" required value={contractorForm.name} onChange={e => setContractorForm(f => ({ ...f, name: e.target.value }))}
               placeholder="Contractor name" className="input-base p-2.5 text-sm" />
-            <input value={contractorForm.contactPhone} onChange={e => setContractorForm(f => ({ ...f, contactPhone: e.target.value }))}
+            <label htmlFor="contractor-phone" className="sr-only">Contact phone</label>
+            <input id="contractor-phone" value={contractorForm.contactPhone} onChange={e => setContractorForm(f => ({ ...f, contactPhone: e.target.value }))}
               placeholder="Contact phone (optional)" className="input-base p-2.5 text-sm" />
-            <select value={contractorForm.workLocation} onChange={e => setContractorForm(f => ({ ...f, workLocation: e.target.value }))}
+            <label htmlFor="contractor-site" className="sr-only">Site</label>
+            <select id="contractor-site" value={contractorForm.workLocation} onChange={e => setContractorForm(f => ({ ...f, workLocation: e.target.value }))}
               className="input-base p-2.5 text-sm">
               <option value="">No specific site</option>
               {sites.map(s => <option key={s._id} value={s._id}>{s.name}</option>)}
             </select>
-            <input type="number" min={1} value={contractorForm.headcountCap} onChange={e => setContractorForm(f => ({ ...f, headcountCap: e.target.value }))}
+            <label htmlFor="contractor-cap" className="sr-only">Headcount cap</label>
+            <input id="contractor-cap" type="number" min={1} value={contractorForm.headcountCap} onChange={e => setContractorForm(f => ({ ...f, headcountCap: e.target.value }))}
               placeholder="Headcount cap (optional)" className="input-base p-2.5 text-sm text-mono" />
             <div className="md:col-span-2 flex gap-2">
               <button disabled={savingContractor} type="submit" className="flex items-center gap-1.5 px-4 py-2 bg-accent/90 hover:bg-accent text-on-accent rounded-lg text-sm font-medium disabled:opacity-50">
@@ -191,9 +196,13 @@ export default function BillingPage() {
                 <p className="text-text-primary text-sm font-medium">{c.name}</p>
                 <p className="text-text-tertiary text-xs">{c.workLocation?.name || 'No specific site'}{c.contactPhone ? ` · ${c.contactPhone}` : ''}</p>
               </div>
+              {/* "At capacity" is an expected, neutral business state, not an
+                  error — badge-danger is reserved for actual security/spoof
+                  alerts elsewhere in the app; warning reads as "worth noting"
+                  without implying something is wrong. */}
               <div className="flex items-center gap-3">
                 {c.headcountCap ? (
-                  <span className={`text-xs text-mono px-2 py-1 rounded-full ${c.currentHeadcount >= c.headcountCap ? 'badge-danger' : 'badge-accent'}`}>
+                  <span className={`text-xs text-mono px-2 py-1 rounded-full ${c.currentHeadcount >= c.headcountCap ? 'badge-warning' : 'badge-accent'}`}>
                     {c.currentHeadcount}/{c.headcountCap}
                   </span>
                 ) : (

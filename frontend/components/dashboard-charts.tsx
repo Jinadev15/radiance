@@ -12,7 +12,7 @@ interface TrendPoint { date: string; present: number; onTime: number; late: numb
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (active && payload && payload.length) {
     return (
-      <div className="surface-elevated p-3 rounded-lg shadow-xl text-sm">
+      <div className="surface-elevated p-3 rounded-lg text-sm">
         <p className="font-medium text-text-primary mb-2 text-mono">{label}</p>
         {payload.map((entry: any, index: number) => (
           <div key={index} className="flex items-center gap-2 mb-1">

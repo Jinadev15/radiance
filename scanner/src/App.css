@@ -1,3 +1,11 @@
+/* Note on literal rgb(255 255 255 / x) / rgb(0 0 0 / x) values used for
+   box-shadow/drop-shadow depth and glow effects throughout this file
+   (buttons, cards, hero, reticle): these are a separate, deliberate
+   exception from the token system, same reasoning as the camera-overlay
+   note further down — shadows conventionally stay black/white regardless
+   of theme and this app is dark-only anyway, so there's no light-theme
+   value they'd need to swap to. Actual surface/text/border colors always
+   go through the tokens; only shadow/glow effects use literals. */
 * {
   box-sizing: border-box;
   margin: 0;
@@ -25,6 +33,25 @@ body, html {
   font-family: var(--font-display);
 }
 
+/* Shared heading scale — every screen was previously picking its own
+   fontSize ad hoc via inline styles (1.75rem/2rem/2.5rem with no pattern
+   tying a size to a role), so the same visual role rendered at a different
+   size depending on which screen you were on. Two sizes cover every case:
+   section headings, and the one "hero" moment (the success screen's name). */
+.text-h2 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.75rem;
+  letter-spacing: -0.01em;
+}
+
+.text-h1-hero {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 2.5rem;
+  letter-spacing: -0.02em;
+}
+
 .text-mono {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
@@ -39,14 +66,36 @@ body, html {
   display: flex;
   flex-direction: column;
   background-color: var(--color-background);
+  /* A faint radial lift near the top keeps a pure-black ground from
+     reading as flat/empty — still monochrome, just enough falloff to
+     suggest depth rather than a single flat fill. */
+  background-image: radial-gradient(ellipse 900px 500px at 50% -10%, rgb(255 255 255 / 0.05), transparent 70%);
   color: var(--color-text-primary);
 }
 
+/* No Tailwind is installed in this app (plain Vite + hand-written CSS) —
+   every screen's JSX still applies `flex flex-col min-h-screen` here as
+   Tailwind utility classes, which were pure no-ops with no CSS backing
+   them. `.hero-content`'s `flex: 1` (further down) depends on its parent
+   actually being a flex column at full viewport height to vertically
+   center content, which silently never happened. Defined for real below,
+   matching what those utility class *names* were meant to do. */
 .scanner-container {
   max-width: 1100px;
   margin: 0 auto;
   width: 100%;
   padding: 0 1.5rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* Root wrapper in App.jsx — same story, `className="app-container"` had
+   no matching rule anywhere. */
+.app-container {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
 .scanner-header {
@@ -61,10 +110,14 @@ body, html {
 .brand-logo {
   font-family: var(--font-display);
   font-weight: 600;
-  font-size: 1.5rem;
-  letter-spacing: -0.01em;
+  font-size: 1.375rem;
+  letter-spacing: -0.015em;
   color: var(--color-text-primary);
   text-decoration: none;
+}
+
+.brand-logo img {
+  filter: drop-shadow(0 2px 8px rgb(0 0 0 / 0.5));
 }
 
 /* ─── Buttons ─── */
@@ -78,21 +131,29 @@ body, html {
   font-family: var(--font-body);
   font-weight: 600;
   font-size: 0.95rem;
-  padding: 1rem 2rem;
+  letter-spacing: -0.005em;
+  padding: 1rem 2.25rem;
   border-radius: var(--radius-lg);
   border: none;
   cursor: pointer;
-  transition: transform 0.2s var(--ease-expo), background-color 0.2s var(--ease-expo);
+  box-shadow: 0 1px 0 0 rgb(255 255 255 / 0.5) inset, 0 8px 24px -8px rgb(255 255 255 / 0.25);
+  transition: transform 0.25s var(--ease-expo), box-shadow 0.25s var(--ease-expo), background-color 0.25s var(--ease-expo);
 }
 
 .btn-primary:hover:not(:disabled) {
   background-color: color-mix(in oklch, var(--color-accent), white 10%);
-  transform: translateY(-1px);
+  transform: translateY(-2px);
+  box-shadow: 0 1px 0 0 rgb(255 255 255 / 0.6) inset, 0 14px 32px -10px rgb(255 255 255 / 0.35);
+}
+
+.btn-primary:active:not(:disabled) {
+  transform: translateY(0);
 }
 
 .btn-primary:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+  box-shadow: none;
 }
 
 .btn-secondary {
@@ -104,16 +165,19 @@ body, html {
   font-family: var(--font-body);
   font-weight: 500;
   font-size: 0.95rem;
-  padding: 1rem 2rem;
+  letter-spacing: -0.005em;
+  padding: 1rem 2.25rem;
   border-radius: var(--radius-lg);
   border: 1px solid var(--color-border);
   cursor: pointer;
-  transition: transform 0.2s var(--ease-expo), border-color 0.2s var(--ease-expo);
+  box-shadow: 0 8px 20px -12px rgb(0 0 0 / 0.6);
+  transition: transform 0.25s var(--ease-expo), border-color 0.25s var(--ease-expo), box-shadow 0.25s var(--ease-expo);
 }
 
 .btn-secondary:hover {
   border-color: var(--color-accent-border);
-  transform: translateY(-1px);
+  transform: translateY(-2px);
+  box-shadow: 0 12px 26px -12px rgb(0 0 0 / 0.7);
 }
 
 .btn-back {
@@ -149,20 +213,22 @@ body, html {
 .hero-title {
   font-family: var(--font-display);
   font-weight: 600;
-  font-size: clamp(2.5rem, 6vw, 3.75rem);
-  line-height: 1.05;
-  letter-spacing: -0.02em;
+  font-size: clamp(3rem, 8vw, 4.75rem);
+  line-height: 1.02;
+  letter-spacing: -0.03em;
   color: var(--color-text-primary);
+  text-shadow: 0 2px 40px rgb(255 255 255 / 0.08);
   max-width: 900px;
-  margin-bottom: 1rem;
+  margin-bottom: 1.125rem;
 }
 
 .hero-subtitle {
-  font-size: 1.05rem;
+  font-size: 1.0625rem;
+  font-weight: 300;
   color: var(--color-text-secondary);
   max-width: 520px;
   line-height: 1.6;
-  margin-bottom: 2.5rem;
+  margin-bottom: 2.75rem;
 }
 
 .hero-actions {
@@ -186,13 +252,17 @@ body, html {
 }
 
 .action-card {
-  background: var(--color-surface);
+  /* surface-elevated (not surface) — a card sitting on a near-black page
+     needs real separation from the ground to read as a raised object
+     rather than a slightly-different rectangle of the same flat black. */
+  background: linear-gradient(165deg, rgb(255 255 255 / 0.07), transparent 55%), var(--color-surface-elevated);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   padding: 2rem;
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.2s var(--ease-expo), transform 0.2s var(--ease-expo);
+  box-shadow: 0 1px 0 0 rgb(255 255 255 / 0.06) inset, 0 16px 32px -18px rgb(0 0 0 / 0.85);
+  transition: border-color 0.25s var(--ease-expo), transform 0.25s var(--ease-expo), box-shadow 0.25s var(--ease-expo), background 0.25s var(--ease-expo);
   font-family: inherit;
   color: inherit;
   width: 100%;
@@ -200,7 +270,9 @@ body, html {
 
 .action-card:hover, .action-card:focus-visible {
   border-color: var(--color-accent-border);
-  transform: translateY(-2px);
+  transform: translateY(-3px);
+  background: linear-gradient(165deg, rgb(255 255 255 / 0.1), transparent 55%), var(--color-surface-elevated);
+  box-shadow: 0 1px 0 0 rgb(255 255 255 / 0.1) inset, 0 24px 44px -18px rgb(0 0 0 / 0.9);
   outline: none;
 }
 
@@ -208,6 +280,7 @@ body, html {
   font-family: var(--font-display);
   font-weight: 600;
   font-size: 1.5rem;
+  letter-spacing: -0.01em;
   color: var(--color-text-primary);
   margin-bottom: 0.35rem;
 }
@@ -218,16 +291,55 @@ body, html {
   line-height: 1.5;
 }
 
+/* Icon badge inside an action card — a soft ambient ring instead of a flat
+   filled circle is what reads as "considered" rather than a generic app
+   icon tile; the ring brightens on hover as its own piece of feedback,
+   independent of the card's own border/shadow change. */
+.action-card-icon {
+  width: 3.25rem;
+  height: 3.25rem;
+  border-radius: 9999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 35% 30%, rgb(255 255 255 / 0.12), rgb(255 255 255 / 0.03) 70%);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.02) inset, 0 4px 14px -6px rgb(0 0 0 / 0.6);
+  color: var(--color-text-primary);
+  transition: border-color 0.25s var(--ease-expo), box-shadow 0.25s var(--ease-expo), transform 0.25s var(--ease-expo);
+}
+
+.action-card-icon--primary {
+  width: 3.75rem;
+  height: 3.75rem;
+  color: var(--color-verify);
+  border-color: var(--color-verify-border);
+  box-shadow: 0 0 0 1px var(--color-verify-border) inset, 0 0 20px -6px rgb(255 255 255 / 0.18);
+}
+
+.action-card:hover .action-card-icon,
+.action-card:focus-visible .action-card-icon {
+  border-color: var(--color-accent-border);
+  transform: scale(1.05);
+}
+
+.action-card:hover .action-card-icon--primary,
+.action-card:focus-visible .action-card-icon--primary {
+  border-color: var(--color-verify);
+  box-shadow: 0 0 0 1px var(--color-verify) inset, 0 0 26px -4px rgb(255 255 255 / 0.3);
+}
+
 /* ─── Forms ─── */
 
 .form-card {
-  background: var(--color-surface);
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.03), transparent 40%), var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   padding: 2rem;
   width: 100%;
   max-width: 480px;
   margin-top: 0.5rem;
+  box-shadow: 0 1px 0 0 rgb(255 255 255 / 0.04) inset, 0 16px 40px -20px rgb(0 0 0 / 0.8);
 }
 
 .form-group {
@@ -374,22 +486,61 @@ body, html {
   width: 280px;
   height: 280px;
   position: relative;
-  border-radius: var(--radius-lg);
-  overflow: hidden;
+  /* No overflow:hidden here — the corners' own glow needs to bloom past
+     the box's exact edge to read as light rather than a flat sticker; the
+     scanline stays inside on its own via inset positioning, so nothing
+     needs clipping. */
 }
 
+/* Each bracket is two independent arms (not one bordered box corner) so
+   the join is a crisp, deliberate right angle with its own glow — closer
+   to an optical instrument's autofocus brackets than a CSS border trick.
+   A slow, gentle glow-breathing animation (offset per corner) is what
+   turns this from a static decoration into something that reads as
+   "actively scanning." */
 .reticle-corner {
   position: absolute;
-  width: 2rem;
-  height: 2rem;
-  border-color: var(--color-verify);
-  border-style: solid;
+  width: 2.25rem;
+  height: 2.25rem;
+  pointer-events: none;
 }
 
-.corner-tl { top: 0; left: 0; border-width: 3px 0 0 3px; border-top-left-radius: var(--radius-md); }
-.corner-tr { top: 0; right: 0; border-width: 3px 3px 0 0; border-top-right-radius: var(--radius-md); }
-.corner-bl { bottom: 0; left: 0; border-width: 0 0 3px 3px; border-bottom-left-radius: var(--radius-md); }
-.corner-br { bottom: 0; right: 0; border-width: 0 3px 3px 0; border-bottom-right-radius: var(--radius-md); }
+.reticle-corner::before,
+.reticle-corner::after {
+  content: '';
+  position: absolute;
+  background: var(--color-verify);
+  box-shadow: 0 0 10px 1px rgb(255 255 255 / 0.35);
+  border-radius: 2px;
+  animation: corner-breathe 2.8s ease-in-out infinite;
+}
+/* horizontal arm */
+.reticle-corner::before { width: 100%; height: 2.5px; }
+/* vertical arm */
+.reticle-corner::after { width: 2.5px; height: 100%; }
+
+.corner-tl { top: -2px; left: -2px; }
+.corner-tr { top: -2px; right: -2px; }
+.corner-bl { bottom: -2px; left: -2px; }
+.corner-br { bottom: -2px; right: -2px; }
+
+.corner-tl::before, .corner-tl::after { top: 0; left: 0; }
+.corner-tr::before { top: 0; right: 0; }
+.corner-tr::after { top: 0; right: 0; }
+.corner-bl::before { bottom: 0; left: 0; }
+.corner-bl::after { top: 0; left: 0; }
+.corner-br::before, .corner-br::after { bottom: 0; right: 0; }
+
+.corner-tr::before, .corner-tr::after,
+.corner-bl::before, .corner-bl::after,
+.corner-br::before, .corner-br::after {
+  animation-delay: 0.4s;
+}
+
+@keyframes corner-breathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
 
 .reticle-scanline {
   position: absolute;
@@ -425,7 +576,8 @@ body, html {
   border: 4px solid #fff;
   cursor: pointer;
   pointer-events: auto;
-  transition: transform 0.2s var(--ease-expo), background-color 0.2s var(--ease-expo);
+  box-shadow: 0 0 0 0 rgb(255 255 255 / 0.25);
+  transition: transform 0.25s var(--ease-expo), background-color 0.25s var(--ease-expo), box-shadow 0.25s var(--ease-expo);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -434,6 +586,7 @@ body, html {
 .capture-btn-trigger:hover:not(:disabled) {
   transform: scale(1.06);
   background: rgba(255, 255, 255, 0.28);
+  box-shadow: 0 0 0 10px rgb(255 255 255 / 0.06);
 }
 
 .capture-btn-trigger:disabled {

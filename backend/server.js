@@ -10,6 +10,15 @@ const { sendDailyDigest } = require('./utils/dailyDigest');
 
 const app = express();
 
+// Required for express-rate-limit to read the real client IP correctly (and
+// not throw) once this sits behind any real reverse proxy/load balancer
+// (Render, Vercel, nginx, Cloudflare, etc. all add X-Forwarded-For) — without
+// this, express-rate-limit's validation rejects every request the moment
+// that header shows up in production. `1` trusts exactly one hop (the
+// immediate proxy in front of this process); override via TRUST_PROXY if
+// the real deployment sits behind more hops than that.
+app.set('trust proxy', process.env.TRUST_PROXY ? Number(process.env.TRUST_PROXY) : 1);
+
 // Middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -42,30 +51,33 @@ const registerLimiter = rateLimit({
   message: { error: 'Too many registration attempts. Please wait before trying again.' },
 });
 
-// Light general-purpose limiter applied to every authenticated API route as
-// defense in depth — the specific limiters above stay stricter where it matters.
+// Light general-purpose limiter for every other /api/v1 route as defense
+// in depth. Applied per-route below (not blanket-mounted on '/api/v1')
+// so it doesn't double-count against the routes that already have their
+// own stricter limiter — a blanket mount would have meant e.g. /clock-in
+// traffic was being debited from both its own 30/min bucket *and* this
+// one's shared 300/min bucket at the same time.
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 300,
   message: { error: 'Too many requests. Please slow down.' },
 });
-app.use('/api/v1', apiLimiter);
 
 // Routes
 app.use('/api/auth', authLimiter, require('./routes/auth'));
 app.use('/api/v1/clock-in', scannerLimiter, require('./routes/scanner'));
 app.use('/api/v1/clock-out', scannerLimiter, require('./routes/clockout'));
 app.use('/api/v1/register', registerLimiter, require('./routes/register'));
-app.use('/api/v1/employees', require('./routes/employees'));
-app.use('/api/v1/locations', require('./routes/locations'));
-app.use('/api/v1/shifts', require('./routes/shifts'));
-app.use('/api/v1/services', require('./routes/services'));
-app.use('/api/v1/contractors', require('./routes/contractors'));
-app.use('/api/v1/attendance', require('./routes/attendance'));
+app.use('/api/v1/employees', apiLimiter, require('./routes/employees'));
+app.use('/api/v1/locations', apiLimiter, require('./routes/locations'));
+app.use('/api/v1/shifts', apiLimiter, require('./routes/shifts'));
+app.use('/api/v1/services', apiLimiter, require('./routes/services'));
+app.use('/api/v1/contractors', apiLimiter, require('./routes/contractors'));
+app.use('/api/v1/attendance', apiLimiter, require('./routes/attendance'));
 app.use('/api/v1/regularization', scannerLimiter, require('./routes/regularization'));
 app.use('/api/v1/my-attendance', scannerLimiter, require('./routes/myAttendance'));
-app.use('/api/v1/security', require('./routes/security'));
-app.use('/api/v1/dashboard', require('./routes/stats'));
+app.use('/api/v1/security', apiLimiter, require('./routes/security'));
+app.use('/api/v1/dashboard', apiLimiter, require('./routes/stats'));
 
 // Health check (always 200 OK)
 app.get('/api/v1/health', (req, res) => {
@@ -83,7 +95,13 @@ app.use((err, req, res, next) => {
     return res.status(403).json({ error: 'Origin not allowed.' });
   }
   console.error('[ERROR]', err.stack);
-  res.status(500).json({ error: err.message || 'Internal server error' });
+  // Full internal error text (library validation messages, Mongoose
+  // errors, etc.) is useful in logs but shouldn't reach the client —
+  // some of those messages describe internal config/field details that
+  // are unnecessary information disclosure on public endpoints like
+  // /register and /clock-in.
+  const message = process.env.NODE_ENV === 'production' ? 'Internal server error' : (err.message || 'Internal server error');
+  res.status(500).json({ error: message });
 });
 
 // 404 fallback
@@ -112,6 +130,14 @@ async function connectWithRetry() {
   try {
     await mongoose.connect(uri, { serverSelectionTimeoutMS: 3000 });
     console.log('MongoDB connected successfully.');
+    // Without this, a post-connect network blip emits an unhandled 'error'
+    // event on the Connection (an EventEmitter) with zero listeners, which
+    // crashes the whole Node process by default — taking down every route,
+    // not just DB-dependent ones. Directly undermines this file's own
+    // "HTTP listener starts immediately, server never goes down" design.
+    mongoose.connection.on('error', (err) => {
+      console.error('[MongoDB]', err.message);
+    });
     runAutoClockOutSweep().catch(e => console.error('[AutoClockOut]', e.message));
     setInterval(() => {
       runAutoClockOutSweep().catch(e => console.error('[AutoClockOut]', e.message));
@@ -123,9 +149,20 @@ async function connectWithRetry() {
       sendDailyDigest().catch(e => console.error('[DailyDigest]', e.message));
     });
   } catch (err) {
-    console.warn('Local MongoDB 27017 not detected:', err.message);
-    if (MongoMemoryServer) {
-      console.log('Spinning up Embedded Database Engine...');
+    console.warn('MongoDB connection failed:', err.message);
+    // The in-memory fallback is a local-dev convenience only ("it just
+    // works" with no MongoDB installed). It must never trigger in
+    // production: if a real MONGODB_URI is configured but fails to connect
+    // for any reason (wrong password, IP allowlist, a transient Atlas
+    // blip), silently substituting a throwaway in-memory database means
+    // the app looks fully functional — registrations, clock-ins,
+    // everything "works" — while quietly writing to data that vanishes on
+    // the next restart/redeploy, with no error surfaced to anyone. Safer
+    // to keep the site degraded-but-honest (DB-dependent routes return
+    // 503, server stays up, health check still reports dbConnected:false)
+    // and keep retrying the real database.
+    if (MongoMemoryServer && process.env.NODE_ENV !== 'production') {
+      console.log('Spinning up Embedded Database Engine (development only)...');
       try {
         const mongoServer = await MongoMemoryServer.create();
         const memUri = mongoServer.getUri();

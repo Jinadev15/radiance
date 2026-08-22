@@ -7,7 +7,7 @@ export default function MyAttendanceScreen({ result, error, onReset }) {
       <div className="scanner-page">
         <div className="scanner-container flex flex-col min-h-screen">
           <main className="hero-content fade-in" style={{ flex: 1 }}>
-            <h2 className="font-display" style={{ fontSize: '1.75rem', fontWeight: 600, color: 'var(--color-danger)', marginBottom: '1rem' }}>
+            <h2 className="text-h2" style={{ color: 'var(--color-danger)', marginBottom: '1rem' }}>
               Couldn&apos;t Look Up Your Attendance
             </h2>
             <p className="hero-subtitle" style={{ maxWidth: '480px' }}>
@@ -26,7 +26,7 @@ export default function MyAttendanceScreen({ result, error, onReset }) {
     <div className="scanner-page">
       <div className="scanner-container flex flex-col min-h-screen">
         <main className="hero-content fade-in" style={{ padding: '2rem 0 4rem 0', width: '100%' }}>
-          <h2 className="font-display" style={{ fontSize: '1.75rem', fontWeight: 600, marginBottom: '0.25rem' }}>
+          <h2 className="text-h2" style={{ marginBottom: '0.25rem' }}>
             {result.employeeName}
           </h2>
           <p className="hero-subtitle text-mono" style={{ marginBottom: '2rem' }}>

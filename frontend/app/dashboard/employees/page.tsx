@@ -50,6 +50,16 @@ function EmployeesPageInner() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState(() => searchParams.get('q') || '');
+
+  // The header's global search does a router.push with a new ?q= while this
+  // page is already mounted — Next.js reuses the component instance rather
+  // than remounting it, so the lazy useState initializer above only ever
+  // ran once and silently never saw the second search. Resync whenever the
+  // URL's q actually changes.
+  useEffect(() => {
+    const q = searchParams.get('q') || '';
+    setSearch(q);
+  }, [searchParams]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({ name: '', shiftTemplate: '', workLocation: '' });
   const [deactivateTarget, setDeactivateTarget] = useState<Employee | null>(null);
@@ -228,10 +238,13 @@ function EmployeesPageInner() {
                       <td className="px-4 py-3 text-text-secondary text-sm text-mono">{new Date(emp.createdAt).toLocaleDateString()}</td>
                       <td className="px-4 py-3">
                         <div className="flex gap-2">
-                          <button onClick={() => handleEdit(emp)} aria-label={`Edit ${emp.name}`} title="Edit" className="p-1.5 text-text-secondary hover:text-accent hover:bg-accent-muted rounded transition-colors">
+                          {/* Disabled (not hidden) while another row is being edited — clicking
+                              Edit elsewhere used to silently discard whatever was unsaved in the
+                              open row, with no warning. Only one row can be edited at a time now. */}
+                          <button onClick={() => handleEdit(emp)} disabled={editingId !== null} aria-label={`Edit ${emp.name}`} title={editingId !== null ? 'Finish or cancel the current edit first' : 'Edit'} className="p-1.5 text-text-secondary hover:text-accent hover:bg-accent-muted rounded transition-colors disabled:opacity-30 disabled:pointer-events-none">
                             <Edit size={14} />
                           </button>
-                          <button onClick={() => setDeactivateTarget(emp)} aria-label={`Deactivate ${emp.name}`} title="Deactivate" className="p-1.5 text-text-secondary hover:text-danger hover:bg-danger-muted rounded transition-colors">
+                          <button onClick={() => setDeactivateTarget(emp)} disabled={editingId !== null} aria-label={`Deactivate ${emp.name}`} title="Deactivate" className="p-1.5 text-text-secondary hover:text-danger hover:bg-danger-muted rounded transition-colors disabled:opacity-30 disabled:pointer-events-none">
                             <UserX size={14} />
                           </button>
                         </div>

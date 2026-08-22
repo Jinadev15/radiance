@@ -68,6 +68,10 @@ router.get('/:id', auth,
 router.put('/:id', auth,
   [
     param('id').isMongoId().withMessage('Invalid employee ID'),
+    // Mongoose's required:true doesn't reject an empty string, only
+    // null/undefined — without this, a PUT with name:"" would blank out
+    // an employee's name with no server-side rejection.
+    body('name').optional().notEmpty().withMessage('Name cannot be empty').trim(),
     body('workLocation').optional({ nullable: true, checkFalsy: true }).isMongoId().withMessage('Invalid work location ID'),
     body('shiftTemplate').optional({ nullable: true, checkFalsy: true }).isMongoId().withMessage('Invalid shift template ID'),
     body('serviceTag').optional({ nullable: true, checkFalsy: true }).isMongoId().withMessage('Invalid service ID'),
@@ -77,6 +81,17 @@ router.put('/:id', auth,
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
     try {
+      // Mirrors the scope check GET /:id already has — without this, a
+      // supervisor could edit (and have echoed back) any employee at any
+      // site just by knowing/guessing its ID, not only their own site's.
+      if (req.user.role === 'supervisor') {
+        const existing = await Employee.findById(req.params.id).select('workLocation');
+        if (!existing) return res.status(404).json({ error: 'Employee not found' });
+        if (String(existing.workLocation) !== String(req.user.workLocation)) {
+          return res.status(403).json({ error: 'Not authorized to edit this employee.' });
+        }
+      }
+
       // Supervisors can't reassign someone to a different site or edit contractor/service billing fields.
       const allowedFields = req.user.role === 'supervisor'
         ? ['name', 'shiftTemplate']

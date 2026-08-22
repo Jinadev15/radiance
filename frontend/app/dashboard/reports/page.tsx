@@ -27,7 +27,7 @@ export default function ReportsPage() {
   return (
     <div className="p-6 space-y-6">
       <div>
-        <h1 className="text-2xl text-display text-text-primary">Reports & Export</h1>
+        <h1 className="text-2xl font-semibold text-display text-text-primary">Reports & Export</h1>
         <p className="text-text-secondary">Export attendance data for payroll processing</p>
       </div>
 
@@ -38,13 +38,13 @@ export default function ReportsPage() {
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
-            <label className="text-sm text-text-secondary">Start Date</label>
-            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
+            <label htmlFor="report-start" className="text-sm text-text-secondary">Start Date</label>
+            <input id="report-start" type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
               className="input-base mt-1 w-full px-3 py-2 text-sm" />
           </div>
           <div>
-            <label className="text-sm text-text-secondary">End Date</label>
-            <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)}
+            <label htmlFor="report-end" className="text-sm text-text-secondary">End Date</label>
+            <input id="report-end" type="date" value={endDate} onChange={e => setEndDate(e.target.value)}
               className="input-base mt-1 w-full px-3 py-2 text-sm" />
           </div>
         </div>

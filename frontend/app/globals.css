@@ -66,7 +66,12 @@
 
   --token-text-primary: oklch(0.225 0.02 258);
   --token-text-secondary: oklch(0.465 0.016 258);
-  --token-text-tertiary: oklch(0.615 0.013 258);
+  /* Was oklch(0.615 ...) — measured 3.42–3.71:1 against these backgrounds,
+     failing WCAG AA (4.5:1) at every size this token is actually used at
+     (10–12px captions/hints/timestamps, i.e. exactly where contrast
+     matters most). 0.52 measures 5.06:1 — passes with real margin, while
+     staying visibly lighter/lower-emphasis than text-secondary (0.465). */
+  --token-text-tertiary: oklch(0.52 0.013 258);
   --token-on-accent: oklch(0.99 0.004 255);
 
   /* Signal Blue — primary interactive color. Precise and cool rather than
@@ -75,54 +80,89 @@
   --token-accent-muted: oklch(0.47 0.135 253 / 0.09);
   --token-accent-border: oklch(0.47 0.135 253 / 0.24);
 
-  --token-verify: oklch(0.635 0.128 199);
-  --token-verify-muted: oklch(0.635 0.128 199 / 0.1);
-  --token-verify-border: oklch(0.635 0.128 199 / 0.24);
+  /* verify/success/warning lightness values below are darkened from the
+     original (0.635/0.6/0.665) specifically because those measured
+     2.88–3.41:1 as *badge text* against their own composited muted
+     background — failing AA on exactly the badges meant to reassure
+     someone the system is working ("Live", "Liveness Verified"). Each
+     value below is the minimum darkening that clears 4.5:1 with a little
+     margin, measured against the actual composited background, not
+     guessed. Same tokens are also used standalone (icons, chart lines) —
+     slightly richer/deeper now, not just a badge-only fix. */
+  --token-verify: oklch(0.5 0.128 199);
+  --token-verify-muted: oklch(0.5 0.128 199 / 0.1);
+  --token-verify-border: oklch(0.5 0.128 199 / 0.24);
 
-  --token-success: oklch(0.6 0.145 152);
-  --token-success-muted: oklch(0.6 0.145 152 / 0.09);
-  --token-success-border: oklch(0.6 0.145 152 / 0.22);
+  --token-success: oklch(0.52 0.145 152);
+  --token-success-muted: oklch(0.52 0.145 152 / 0.09);
+  --token-success-border: oklch(0.52 0.145 152 / 0.22);
 
-  --token-warning: oklch(0.665 0.155 66);
-  --token-warning-muted: oklch(0.665 0.155 66 / 0.11);
-  --token-warning-border: oklch(0.665 0.155 66 / 0.24);
+  --token-warning: oklch(0.54 0.155 66);
+  --token-warning-muted: oklch(0.54 0.155 66 / 0.11);
+  --token-warning-border: oklch(0.54 0.155 66 / 0.24);
 
   --token-danger: oklch(0.55 0.21 25);
   --token-danger-muted: oklch(0.55 0.21 25 / 0.09);
   --token-danger-border: oklch(0.55 0.21 25 / 0.22);
 }
 
+/* Dark mode: deliberately pure monochrome — zero chroma on every neutral
+   and on the accent itself. No blue, no cyan. The "premium" read here comes
+   from restraint (a single tone of white doing all the interactive work,
+   plus soft glow/elevation for depth) rather than from an accent hue —
+   avoids the generic "near-black + one neon pop" AI-dashboard cliché by
+   not having a pop at all. Semantic success/warning/danger keep a faint,
+   heavily desaturated tint — pure information, never decoration — so a
+   spoof-attempt alert is still visually distinguishable from a normal row;
+   everything else in the theme is genuinely grayscale. */
 .dark {
-  --token-background: oklch(0.165 0.012 258);
-  --token-surface: oklch(0.205 0.014 258);
-  --token-surface-elevated: oklch(0.245 0.016 258);
-  --token-border: oklch(0.325 0.016 258);
-  --token-border-subtle: oklch(0.26 0.014 258);
+  --token-background: oklch(0.12 0 0);
+  --token-surface: oklch(0.155 0 0);
+  --token-surface-elevated: oklch(0.20 0 0);
+  --token-border: oklch(0.28 0 0);
+  --token-border-subtle: oklch(0.22 0 0);
 
-  --token-text-primary: oklch(0.955 0.006 255);
-  --token-text-secondary: oklch(0.685 0.013 255);
-  --token-text-tertiary: oklch(0.5 0.013 255);
-  --token-on-accent: oklch(0.99 0.004 255);
+  --token-text-primary: oklch(0.97 0 0);
+  --token-text-secondary: oklch(0.72 0 0);
+  /* Was 0.5 — measured 3.02:1 against surface-elevated (fails even the 3:1
+     large-text floor). 0.62 measures 4.97:1 against surface-elevated and
+     5.57:1 against background — passes AA against every surface this
+     token actually sits on. */
+  --token-text-tertiary: oklch(0.62 0 0);
+  --token-on-accent: oklch(0.12 0 0);
 
-  --token-accent: oklch(0.635 0.155 253);
-  --token-accent-muted: oklch(0.635 0.155 253 / 0.14);
-  --token-accent-border: oklch(0.635 0.155 253 / 0.3);
+  --token-accent: oklch(0.95 0 0);
+  --token-accent-muted: oklch(0.95 0 0 / 0.09);
+  --token-accent-border: oklch(0.95 0 0 / 0.22);
 
-  --token-verify: oklch(0.75 0.13 197);
-  --token-verify-muted: oklch(0.75 0.13 197 / 0.14);
-  --token-verify-border: oklch(0.75 0.13 197 / 0.3);
+  /* Same white family as --token-accent — distinguished by a glow
+     animation (see .animate-subtle-pulse / live-dot usage) rather than
+     hue, so "verified/live" still reads as its own state without
+     reintroducing color. */
+  --token-verify: oklch(0.92 0 0);
+  --token-verify-muted: oklch(0.92 0 0 / 0.1);
+  --token-verify-border: oklch(0.92 0 0 / 0.26);
 
-  --token-success: oklch(0.7 0.16 152);
-  --token-success-muted: oklch(0.7 0.16 152 / 0.13);
-  --token-success-border: oklch(0.7 0.16 152 / 0.28);
+  --token-success: oklch(0.75 0.05 152);
+  --token-success-muted: oklch(0.75 0.05 152 / 0.1);
+  --token-success-border: oklch(0.75 0.05 152 / 0.22);
 
-  --token-warning: oklch(0.76 0.15 70);
-  --token-warning-muted: oklch(0.76 0.15 70 / 0.13);
-  --token-warning-border: oklch(0.76 0.15 70 / 0.28);
+  /* Hue widened from 70 to 85 (was only 45° from danger's 25, close enough
+     to be a real risk on the red-green axis); L bumped from a measured
+     4.40:1 badge-text contrast (below the 4.5:1 AA floor) to a verified
+     5.37:1. */
+  --token-warning: oklch(0.8 0.08 85);
+  --token-warning-muted: oklch(0.8 0.08 85 / 0.1);
+  --token-warning-border: oklch(0.8 0.08 85 / 0.22);
 
-  --token-danger: oklch(0.66 0.19 25);
-  --token-danger-muted: oklch(0.66 0.19 25 / 0.13);
-  --token-danger-border: oklch(0.66 0.19 25 / 0.28);
+  /* Hue pulled from 25 to 15 for the same separation-from-warning reason;
+     L 0.7->0.72 clears AA (was 4.40:1, now 4.57:1, measured against the
+     actual composited badge background, not guessed). */
+  --token-danger: oklch(0.72 0.09 15);
+  --token-danger-muted: oklch(0.72 0.09 15 / 0.1);
+  --token-danger-border: oklch(0.72 0.09 15 / 0.22);
+
+  color-scheme: dark;
 }
 
 @layer base {
@@ -187,16 +227,42 @@
   animation: subtle-pulse 2.5s ease-in-out infinite;
 }
 
-/* ─── Structural Utilities ─── */
+/* ─── Structural Utilities ───
+   Layered as `components`: Tailwind's own utility classes (pl-10, p-3,
+   etc.) live in the `utilities` layer, which Tailwind always ranks above
+   `components` regardless of source order — so `className="input-base
+   pl-10"` correctly lets pl-10 win. Without this @layer wrapper these were
+   plain unlayered rules, which CSS ranks *above* any layered utility
+   class — silently breaking every per-instance padding/spacing override
+   used alongside these classes app-wide (the Employees search icon
+   overlapping its placeholder text was one visible symptom of this). */
+@layer components {
 
 .surface {
   background-color: var(--color-surface);
   border: 1px solid var(--color-border);
+  transition: border-color 0.25s var(--ease-expo), box-shadow 0.25s var(--ease-expo);
 }
 
 .surface-elevated {
   background-color: var(--color-surface-elevated);
   border: 1px solid var(--color-border);
+  transition: border-color 0.25s var(--ease-expo), box-shadow 0.25s var(--ease-expo);
+}
+
+/* Dark mode gets real depth instead of relying on the border alone — a
+   soft downward shadow plus a faint inner top highlight, the way a matte
+   physical surface catches light. Kept subtle; this is restraint doing
+   the "premium" work, not a heavy glow effect. */
+.dark .surface,
+.dark .surface-elevated {
+  box-shadow: 0 1px 0 0 rgb(255 255 255 / 0.04) inset, 0 8px 20px -12px rgb(0 0 0 / 0.6);
+}
+
+.dark .surface:hover,
+.dark .surface-elevated:hover {
+  border-color: var(--color-accent-border);
+  box-shadow: 0 1px 0 0 rgb(255 255 255 / 0.06) inset, 0 10px 26px -12px rgb(0 0 0 / 0.7);
 }
 
 .border-structural {
@@ -267,3 +333,5 @@
   color: var(--color-verify);
   border: 1px solid var(--color-verify-border);
 }
+
+} /* @layer components */

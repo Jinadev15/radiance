@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
 import { AlertCircle } from 'lucide-react';
 import { DashboardSidebar } from './dashboard-sidebar';
 import { DashboardHeader } from './dashboard-header';
@@ -15,7 +14,6 @@ export interface CurrentUser {
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -24,17 +22,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     api.getMe()
       .then(u => setUser(u as CurrentUser))
       .catch(err => {
-        // A 401 means the session cookie is missing/expired — middleware.ts
-        // will already usually catch this before the page renders, but if
-        // it doesn't (cookie expired mid-session), send the user back to
+        // A 401 means the session cookie is missing/expired — proxy.ts will
+        // already usually catch this before the page renders, but if it
+        // doesn't (cookie expired mid-session), send the user back to
         // login instead of leaving the shell stuck on "Loading…" forever.
+        //
+        // This must go through api.logout() (clears the cookie server-side,
+        // then does a full navigation), NOT router.push('/login') directly:
+        // proxy.ts redirects /login -> /dashboard whenever *any* token
+        // cookie is present, without checking whether it's still valid. A
+        // client-side push while the stale cookie is still sitting in the
+        // browser gets bounced straight back to /dashboard by that rule,
+        // which 401s again and pushes again — an infinite loop between the
+        // two routes. Clearing the cookie first breaks that loop.
         if (err instanceof ApiError && err.status === 401) {
-          router.push('/login');
+          api.logout();
           return;
         }
         setLoadError('Could not load your account. Check your connection and refresh.');
       });
-  }, [router]);
+  }, []);
 
   return (
     <div className="flex h-screen bg-background text-text-primary overflow-hidden font-sans">

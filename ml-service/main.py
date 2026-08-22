@@ -2,6 +2,7 @@ import os
 import cv2
 import base64
 import logging
+import urllib.request
 import numpy as np
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
@@ -27,12 +28,41 @@ MODEL_DIR = Path(__file__).parent / "models"
 DETECTOR_MODEL = MODEL_DIR / "face_detection_yunet_2023mar.onnx"
 RECOGNIZER_MODEL = MODEL_DIR / "face_recognition_sface_2021dec.onnx"
 
-for path in (DETECTOR_MODEL, RECOGNIZER_MODEL):
-    if not path.exists():
+# These two files are intentionally gitignored (38MB of binary weights
+# don't belong in git history) — which means a fresh deploy on a hosting
+# platform has no way to have them already present unless something fetches
+# them. Rather than requiring every hosting provider to support a custom
+# build-command step (not all free tiers do), the service fetches its own
+# weights from the OpenCV Zoo on first boot if they're missing, so
+# `python main.py` alone is enough to stand the service up anywhere.
+_MODEL_SOURCES = {
+    DETECTOR_MODEL: "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+    RECOGNIZER_MODEL: "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
+}
+_MIN_EXPECTED_BYTES = 100_000  # a failed download (e.g. an HTML error page) would be far smaller than either real model
+
+def _ensure_model(path: Path, url: str) -> None:
+    if path.exists() and path.stat().st_size >= _MIN_EXPECTED_BYTES:
+        return
+    logger.info(f"Model file missing or incomplete, downloading: {path.name}")
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".part")
+    try:
+        urllib.request.urlretrieve(url, tmp_path)
+        if tmp_path.stat().st_size < _MIN_EXPECTED_BYTES:
+            raise RuntimeError(f"Downloaded file for {path.name} is suspiciously small ({tmp_path.stat().st_size} bytes) — likely a failed/redirected download, not the real model.")
+        tmp_path.replace(path)
+        logger.info(f"Downloaded {path.name} ({path.stat().st_size} bytes)")
+    except Exception as e:
+        if tmp_path.exists():
+            tmp_path.unlink()
         raise RuntimeError(
-            f"Missing model file: {path}\n"
-            f"Download it from the OpenCV Zoo (see ml-service/README.md) before starting the service."
+            f"Could not download required model file {path.name} from {url}: {e}\n"
+            f"Download it manually instead (see ml-service/README.md) and place it at {path}."
         )
+
+for _path, _url in _MODEL_SOURCES.items():
+    _ensure_model(_path, _url)
 
 detector = cv2.FaceDetectorYN_create(str(DETECTOR_MODEL), "", (320, 320), score_threshold=0.7)
 recognizer = cv2.FaceRecognizerSF_create(str(RECOGNIZER_MODEL), "")
@@ -45,9 +75,18 @@ app = FastAPI(
     version="3.0.0"
 )
 
+# Nothing in this app calls the ML service directly from a browser (the
+# Node backend is the only caller, server-to-server, which CORS doesn't
+# apply to) — so this is defense-in-depth rather than load-bearing, but it
+# was hardcoded to dev-only origins with no way to add a real deployed
+# origin without editing code. EXTRA_CORS_ORIGINS lets that be configured
+# without a redeploy.
+_default_origins = ["http://localhost:5000", "http://localhost:3000", "http://localhost:3001", "http://localhost:5173"]
+_extra_origins = [o.strip() for o in os.getenv("EXTRA_CORS_ORIGINS", "").split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5000", "http://localhost:3000", "http://localhost:3001", "http://localhost:5173"],
+    allow_origins=_default_origins + _extra_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -64,6 +103,12 @@ LIVENESS_LAPLACIAN_THRESHOLD = float(os.getenv("LIVENESS_LAPLACIAN_THRESHOLD", "
 LIVENESS_GLARE_RATIO = float(os.getenv("LIVENESS_GLARE_RATIO", "0.15"))
 LIVENESS_MIN_MOTION = float(os.getenv("LIVENESS_MIN_MOTION", "2.0"))  # mean abs pixel diff, 0-255 scale
 MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024  # 10MB limit
+# The byte-size check above only bounds the *compressed* payload — a small,
+# highly-compressible image (e.g. a large solid-color PNG) can still decode
+# into a huge pixel buffer (a few hundred MB+) entirely in-process. No real
+# webcam/phone capture needs a dimension above this; reject anything larger
+# right after decode, before it's used for anything else.
+MAX_IMAGE_DIMENSION = 4096
 
 logger.info(f"ML Service starting — engine=OpenCV(YuNet+SFace), cosine_threshold={COSINE_MATCH_THRESHOLD}")
 
@@ -118,6 +163,8 @@ def decode_image(image_b64: str) -> np.ndarray:
         img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
         if img is None:
             raise ValueError("Failed to decode image")
+        if img.shape[0] > MAX_IMAGE_DIMENSION or img.shape[1] > MAX_IMAGE_DIMENSION:
+            raise ValueError(f"Image dimensions too large (max {MAX_IMAGE_DIMENSION}px per side)")
         return img
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid image data: {str(e)}")

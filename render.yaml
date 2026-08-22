@@ -1,0 +1,42 @@
+services:
+  - type: web
+    name: radiance-backend
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TRUST_PROXY
+        value: "1"
+      - key: COOKIE_CROSS_SITE
+        value: "true"
+      # Everything below is secret or depends on another service's URL,
+      # which doesn't exist yet at the time this Blueprint first runs —
+      # Render will prompt for these during setup and they're filled in
+      # by hand afterward. See the deployment guide for what goes where.
+      - key: JWT_SECRET
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: ML_SERVICE_URL
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: SCANNER_URL
+        sync: false
+
+  - type: web
+    name: radiance-ml-service
+    runtime: python
+    plan: free
+    rootDir: ml-service
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"

@@ -113,7 +113,7 @@ export default function ShiftsPage() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-text-primary text-display">Shifts</h1>
+          <h1 className="text-2xl font-semibold text-text-primary text-display">Shifts</h1>
           <p className="text-text-secondary">{shifts.length} shift template{shifts.length !== 1 ? 's' : ''} — night shifts crossing midnight are handled automatically</p>
         </div>
         {!showForm && (
@@ -136,23 +136,23 @@ export default function ShiftsPage() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="md:col-span-2">
-              <label className="text-sm font-medium text-text-secondary">Shift Name</label>
-              <input required value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+              <label htmlFor="shift-name" className="text-sm font-medium text-text-secondary">Shift Name</label>
+              <input id="shift-name" required value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                 placeholder="e.g. Security Night Shift" className="input-base w-full mt-1 p-3" />
             </div>
             <div>
-              <label className="text-sm font-medium text-text-secondary">Start Time</label>
-              <input required type="time" value={form.startTime} onChange={e => setForm(f => ({ ...f, startTime: e.target.value }))}
+              <label htmlFor="shift-start" className="text-sm font-medium text-text-secondary">Start Time</label>
+              <input id="shift-start" required type="time" value={form.startTime} onChange={e => setForm(f => ({ ...f, startTime: e.target.value }))}
                 className="input-base w-full mt-1 p-3" />
             </div>
             <div>
-              <label className="text-sm font-medium text-text-secondary">End Time</label>
-              <input required type="time" value={form.endTime} onChange={e => setForm(f => ({ ...f, endTime: e.target.value }))}
+              <label htmlFor="shift-end" className="text-sm font-medium text-text-secondary">End Time</label>
+              <input id="shift-end" required type="time" value={form.endTime} onChange={e => setForm(f => ({ ...f, endTime: e.target.value }))}
                 className="input-base w-full mt-1 p-3" />
             </div>
             <div>
-              <label className="text-sm font-medium text-text-secondary">Grace Period (minutes)</label>
-              <input required type="number" min={0} max={120} value={form.graceMinutes} onChange={e => setForm(f => ({ ...f, graceMinutes: e.target.value }))}
+              <label htmlFor="shift-grace" className="text-sm font-medium text-text-secondary">Grace Period (minutes)</label>
+              <input id="shift-grace" required type="number" min={0} max={120} value={form.graceMinutes} onChange={e => setForm(f => ({ ...f, graceMinutes: e.target.value }))}
                 className="input-base w-full mt-1 p-3 text-mono" />
             </div>
           </div>
@@ -200,11 +200,13 @@ export default function ShiftsPage() {
         <h2 className="text-text-primary font-semibold flex items-center gap-2"><Users2 size={18} className="text-accent" /> Bulk Assign by Site</h2>
         <p className="text-text-secondary text-sm">Assign one shift to every active employee at a site in one action — useful when a client site changes its operating hours.</p>
         <form onSubmit={handleBulkAssign} className="flex flex-col sm:flex-row gap-3">
-          <select required value={bulkSite} onChange={e => setBulkSite(e.target.value)} className="input-base p-3 flex-1">
+          <label htmlFor="bulk-site" className="sr-only">Site</label>
+          <select id="bulk-site" required value={bulkSite} onChange={e => setBulkSite(e.target.value)} className="input-base p-3 flex-1">
             <option value="">Select a site…</option>
             {sites.map(s => <option key={s._id} value={s._id}>{s.name}</option>)}
           </select>
-          <select required value={bulkShift} onChange={e => setBulkShift(e.target.value)} className="input-base p-3 flex-1">
+          <label htmlFor="bulk-shift" className="sr-only">Shift</label>
+          <select id="bulk-shift" required value={bulkShift} onChange={e => setBulkShift(e.target.value)} className="input-base p-3 flex-1">
             <option value="">Select a shift…</option>
             {shifts.map(s => <option key={s._id} value={s._id}>{s.name} ({s.startTime}–{s.endTime})</option>)}
           </select>

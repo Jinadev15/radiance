@@ -7,7 +7,7 @@ import api from '@/lib/api';
 interface Site { _id: string; name: string; }
 interface Shift { _id: string; name: string; startTime: string; endTime: string; }
 interface Service { _id: string; name: string; }
-interface Contractor { _id: string; name: string; currentHeadcount: number; headcountCap?: number; }
+interface Contractor { _id: string; name: string; currentHeadcount: number; headcountCap?: number | null; }
 
 export default function RegisterEmployeePage() {
     const [formData, setFormData] = useState({
@@ -64,22 +64,23 @@ export default function RegisterEmployeePage() {
     return (
         <div className="p-6 lg:p-8 max-w-3xl mx-auto space-y-6">
             <div>
-                <h1 className="text-2xl text-display text-text-primary flex items-center gap-3"><UserPlus size={24} className="text-accent" /> Register New Employee</h1>
+                <h1 className="text-2xl font-semibold text-display text-text-primary flex items-center gap-3"><UserPlus size={24} className="text-accent" /> Register New Employee</h1>
                 <p className="text-text-secondary text-sm mt-1">Add a new employee with face recognition enrollment.</p>
             </div>
 
             <form onSubmit={handleSubmit} className="surface rounded-lg p-6 space-y-5">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div><label className="text-sm font-medium text-text-secondary">Full Name</label><input required type="text" placeholder="e.g. Ramesh Kumar" className="input-base w-full mt-1 p-3" onChange={e => setFormData({...formData, name: e.target.value})} /></div>
-                    <div><label className="text-sm font-medium text-text-secondary">Phone (10 Digits)</label><input required type="text" pattern="\d{10}" className="input-base w-full mt-1 p-3" onChange={e => setFormData({...formData, phone: e.target.value})} /></div>
-                    <div><label className="text-sm font-medium text-text-secondary">Aadhaar Number (12 Digits)</label><input required type="text" pattern="\d{12}" className="input-base w-full mt-1 p-3" onChange={e => setFormData({...formData, nationalId: e.target.value})} /></div>
-                    <div><label className="text-sm font-medium text-text-secondary">Date of Birth</label><input required type="date" className="input-base w-full mt-1 p-3" onChange={e => setFormData({...formData, dateOfBirth: e.target.value})} /></div>
+                    <div><label htmlFor="reg-name" className="text-sm font-medium text-text-secondary">Full Name</label><input id="reg-name" required type="text" placeholder="e.g. Ramesh Kumar" className="input-base w-full mt-1 p-3" onChange={e => setFormData({...formData, name: e.target.value})} /></div>
+                    <div><label htmlFor="reg-phone" className="text-sm font-medium text-text-secondary">Phone (10 Digits)</label><input id="reg-phone" required type="text" pattern="\d{10}" className="input-base w-full mt-1 p-3" onChange={e => setFormData({...formData, phone: e.target.value})} /></div>
+                    <div><label htmlFor="reg-aadhaar" className="text-sm font-medium text-text-secondary">Aadhaar Number (12 Digits)</label><input id="reg-aadhaar" required type="text" pattern="\d{12}" className="input-base w-full mt-1 p-3" onChange={e => setFormData({...formData, nationalId: e.target.value})} /></div>
+                    <div><label htmlFor="reg-dob" className="text-sm font-medium text-text-secondary">Date of Birth</label><input id="reg-dob" required type="date" className="input-base w-full mt-1 p-3" onChange={e => setFormData({...formData, dateOfBirth: e.target.value})} /></div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div>
-                        <label className="text-sm font-medium text-text-secondary flex items-center gap-1.5"><MapPin size={13} /> Assigned Site</label>
+                        <label htmlFor="reg-site" className="text-sm font-medium text-text-secondary flex items-center gap-1.5"><MapPin size={13} /> Assigned Site</label>
                         <select
+                            id="reg-site"
                             value={formData.workLocation}
                             onChange={e => setFormData({...formData, workLocation: e.target.value})}
                             className="input-base w-full mt-1 p-3"
@@ -93,8 +94,9 @@ export default function RegisterEmployeePage() {
                     </div>
 
                     <div>
-                        <label className="text-sm font-medium text-text-secondary flex items-center gap-1.5"><Clock size={13} /> Shift</label>
+                        <label htmlFor="reg-shift" className="text-sm font-medium text-text-secondary flex items-center gap-1.5"><Clock size={13} /> Shift</label>
                         <select
+                            id="reg-shift"
                             value={formData.shiftTemplate}
                             onChange={e => setFormData({...formData, shiftTemplate: e.target.value})}
                             className="input-base w-full mt-1 p-3"
@@ -105,8 +107,9 @@ export default function RegisterEmployeePage() {
                     </div>
 
                     <div>
-                        <label className="text-sm font-medium text-text-secondary flex items-center gap-1.5"><Tag size={13} /> Service (for billing)</label>
+                        <label htmlFor="reg-service" className="text-sm font-medium text-text-secondary flex items-center gap-1.5"><Tag size={13} /> Service (for billing)</label>
                         <select
+                            id="reg-service"
                             value={formData.serviceTag}
                             onChange={e => setFormData({...formData, serviceTag: e.target.value})}
                             className="input-base w-full mt-1 p-3"
@@ -117,8 +120,9 @@ export default function RegisterEmployeePage() {
                     </div>
 
                     <div>
-                        <label className="text-sm font-medium text-text-secondary flex items-center gap-1.5"><Building2 size={13} /> Contractor</label>
+                        <label htmlFor="reg-contractor" className="text-sm font-medium text-text-secondary flex items-center gap-1.5"><Building2 size={13} /> Contractor</label>
                         <select
+                            id="reg-contractor"
                             value={formData.contractor}
                             onChange={e => setFormData({...formData, contractor: e.target.value})}
                             className="input-base w-full mt-1 p-3"

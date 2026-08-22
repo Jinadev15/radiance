@@ -19,7 +19,11 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
 }
 
 function isWithinGeofence(employeeLat, employeeLon, locationData) {
-    if (!employeeLat || !employeeLon || !locationData.latitude || !locationData.longitude) {
+    // Explicit null/undefined/NaN checks, not truthiness — a falsy check
+    // here would wrongly treat a valid `0` (equator or prime meridian,
+    // both in-range per the WorkLocation schema) as "missing."
+    const missing = (v) => v === null || v === undefined || Number.isNaN(v);
+    if (missing(employeeLat) || missing(employeeLon) || missing(locationData.latitude) || missing(locationData.longitude)) {
         return { within: false, distanceMeters: null, error: "Missing coordinates" };
     }
 

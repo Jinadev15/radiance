@@ -1,45 +1,53 @@
-/* Shared token vocabulary with the dashboard (frontend/app/globals.css) so
-   the kiosk and the admin dashboard read as one product. The kiosk is a
-   deliberate single-theme (dark) surface — better legibility/glare control
-   on a physical device in ambient lighting — so these are painted directly
-   rather than split into light/dark blocks. Values match the dashboard's
-   `.dark` variant one-for-one. */
+/* Shared token vocabulary with the dashboard's dark mode
+   (frontend/app/globals.css `.dark` block) — kept numerically identical so
+   the kiosk and the admin dashboard read as the same product. Deliberately
+   pure monochrome: zero chroma on every neutral and on the accent itself.
+   No blue, no cyan — restraint is the premium signal here, not a color
+   pop. Semantic success/warning/danger keep a faint, heavily desaturated
+   tint since they carry real information (a spoof-attempt result has to
+   read as different from a normal one), but nothing else in the theme
+   carries hue. */
 
 :root {
-  --color-background: oklch(0.165 0.012 258);
-  --color-surface: oklch(0.205 0.014 258);
-  --color-surface-elevated: oklch(0.245 0.016 258);
-  --color-border: oklch(0.325 0.016 258);
-  --color-border-subtle: oklch(0.26 0.014 258);
+  --color-background: oklch(0.12 0 0);
+  --color-surface: oklch(0.155 0 0);
+  --color-surface-elevated: oklch(0.20 0 0);
+  --color-border: oklch(0.28 0 0);
+  --color-border-subtle: oklch(0.22 0 0);
 
-  --color-text-primary: oklch(0.955 0.006 255);
-  --color-text-secondary: oklch(0.685 0.013 255);
-  --color-text-tertiary: oklch(0.5 0.013 255);
-  --color-on-accent: oklch(0.99 0.004 255);
+  --color-text-primary: oklch(0.97 0 0);
+  --color-text-secondary: oklch(0.72 0 0);
+  /* 0.62, not 0.5 — matches the dashboard's dark-mode fix. 0.5 measured
+     3.02:1 against surface-elevated, failing WCAG AA; 0.62 measures
+     4.97:1 there and 5.57:1 against background. */
+  --color-text-tertiary: oklch(0.62 0 0);
+  --color-on-accent: oklch(0.12 0 0);
 
-  --color-accent: oklch(0.635 0.155 253);
-  --color-accent-muted: oklch(0.635 0.155 253 / 0.14);
-  --color-accent-border: oklch(0.635 0.155 253 / 0.3);
+  --color-accent: oklch(0.95 0 0);
+  --color-accent-muted: oklch(0.95 0 0 / 0.09);
+  --color-accent-border: oklch(0.95 0 0 / 0.22);
 
-  /* Verify Cyan — the scan/liveness/identity-confirmed motif. Used for the
-     capture reticle, the scan-line sweep, and "verified" states — kept
-     distinct from --color-success so it reads as "biometrically confirmed,"
-     not just "action succeeded." */
-  --color-verify: oklch(0.75 0.13 197);
-  --color-verify-muted: oklch(0.75 0.13 197 / 0.14);
-  --color-verify-border: oklch(0.75 0.13 197 / 0.3);
+  /* The scan/liveness/identity-confirmed motif — same white family as
+     --color-accent, differentiated by a glow/pulse animation instead of
+     hue (see .reticle-scanline, .animate-subtle-pulse). */
+  --color-verify: oklch(0.92 0 0);
+  --color-verify-muted: oklch(0.92 0 0 / 0.1);
+  --color-verify-border: oklch(0.92 0 0 / 0.26);
 
-  --color-success: oklch(0.7 0.16 152);
-  --color-success-muted: oklch(0.7 0.16 152 / 0.13);
-  --color-success-border: oklch(0.7 0.16 152 / 0.28);
+  --color-success: oklch(0.75 0.05 152);
+  --color-success-muted: oklch(0.75 0.05 152 / 0.1);
+  --color-success-border: oklch(0.75 0.05 152 / 0.22);
 
-  --color-warning: oklch(0.76 0.15 70);
-  --color-warning-muted: oklch(0.76 0.15 70 / 0.13);
-  --color-warning-border: oklch(0.76 0.15 70 / 0.28);
+  /* Same fix as the dashboard's dark tokens: hue widened 70->85 (was only
+     45deg from danger's hue, a real red-green colorblind risk) and lightness
+     re-measured to clear 4.5:1 badge-text contrast. */
+  --color-warning: oklch(0.8 0.08 85);
+  --color-warning-muted: oklch(0.8 0.08 85 / 0.1);
+  --color-warning-border: oklch(0.8 0.08 85 / 0.22);
 
-  --color-danger: oklch(0.66 0.19 25);
-  --color-danger-muted: oklch(0.66 0.19 25 / 0.13);
-  --color-danger-border: oklch(0.66 0.19 25 / 0.28);
+  --color-danger: oklch(0.72 0.09 15);
+  --color-danger-muted: oklch(0.72 0.09 15 / 0.1);
+  --color-danger-border: oklch(0.72 0.09 15 / 0.22);
 
   --font-display: 'IBM Plex Sans', system-ui, sans-serif;
   --font-body: 'Inter', system-ui, sans-serif;
