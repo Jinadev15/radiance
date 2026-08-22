@@ -1,0 +1,60 @@
+/* Shared token vocabulary with the dashboard (frontend/app/globals.css) so
+   the kiosk and the admin dashboard read as one product. The kiosk is a
+   deliberate single-theme (dark) surface — better legibility/glare control
+   on a physical device in ambient lighting — so these are painted directly
+   rather than split into light/dark blocks. Values match the dashboard's
+   `.dark` variant one-for-one. */
+
+:root {
+  --color-background: oklch(0.165 0.012 258);
+  --color-surface: oklch(0.205 0.014 258);
+  --color-surface-elevated: oklch(0.245 0.016 258);
+  --color-border: oklch(0.325 0.016 258);
+  --color-border-subtle: oklch(0.26 0.014 258);
+
+  --color-text-primary: oklch(0.955 0.006 255);
+  --color-text-secondary: oklch(0.685 0.013 255);
+  --color-text-tertiary: oklch(0.5 0.013 255);
+  --color-on-accent: oklch(0.99 0.004 255);
+
+  --color-accent: oklch(0.635 0.155 253);
+  --color-accent-muted: oklch(0.635 0.155 253 / 0.14);
+  --color-accent-border: oklch(0.635 0.155 253 / 0.3);
+
+  /* Verify Cyan — the scan/liveness/identity-confirmed motif. Used for the
+     capture reticle, the scan-line sweep, and "verified" states — kept
+     distinct from --color-success so it reads as "biometrically confirmed,"
+     not just "action succeeded." */
+  --color-verify: oklch(0.75 0.13 197);
+  --color-verify-muted: oklch(0.75 0.13 197 / 0.14);
+  --color-verify-border: oklch(0.75 0.13 197 / 0.3);
+
+  --color-success: oklch(0.7 0.16 152);
+  --color-success-muted: oklch(0.7 0.16 152 / 0.13);
+  --color-success-border: oklch(0.7 0.16 152 / 0.28);
+
+  --color-warning: oklch(0.76 0.15 70);
+  --color-warning-muted: oklch(0.76 0.15 70 / 0.13);
+  --color-warning-border: oklch(0.76 0.15 70 / 0.28);
+
+  --color-danger: oklch(0.66 0.19 25);
+  --color-danger-muted: oklch(0.66 0.19 25 / 0.13);
+  --color-danger-border: oklch(0.66 0.19 25 / 0.28);
+
+  --font-display: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, "SF Mono", monospace;
+
+  --ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

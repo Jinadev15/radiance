@@ -1,0 +1,513 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body, html {
+  width: 100%;
+  height: 100%;
+  font-family: var(--font-body);
+  background-color: var(--color-background);
+  color: var(--color-text-primary);
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.text-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── Screen Containers ─── */
+
+.scanner-page {
+  position: relative;
+  min-height: 100vh;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--color-background);
+  color: var(--color-text-primary);
+}
+
+.scanner-container {
+  max-width: 1100px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 0 1.5rem;
+}
+
+.scanner-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2rem 0;
+  width: 100%;
+  z-index: 20;
+}
+
+.brand-logo {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.5rem;
+  letter-spacing: -0.01em;
+  color: var(--color-text-primary);
+  text-decoration: none;
+}
+
+/* ─── Buttons ─── */
+
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--color-accent);
+  color: var(--color-on-accent);
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 0.95rem;
+  padding: 1rem 2rem;
+  border-radius: var(--radius-lg);
+  border: none;
+  cursor: pointer;
+  transition: transform 0.2s var(--ease-expo), background-color 0.2s var(--ease-expo);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background-color: color-mix(in oklch, var(--color-accent), white 10%);
+  transform: translateY(-1px);
+}
+
+.btn-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--color-surface);
+  color: var(--color-text-primary);
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 0.95rem;
+  padding: 1rem 2rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  cursor: pointer;
+  transition: transform 0.2s var(--ease-expo), border-color 0.2s var(--ease-expo);
+}
+
+.btn-secondary:hover {
+  border-color: var(--color-accent-border);
+  transform: translateY(-1px);
+}
+
+.btn-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: transparent;
+  border: none;
+  color: var(--color-text-secondary);
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: color 0.2s var(--ease-expo);
+}
+
+.btn-back:hover {
+  color: var(--color-text-primary);
+}
+
+/* ─── Hero ─── */
+
+.hero-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 3rem 0 6rem 0;
+  z-index: 10;
+}
+
+.hero-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: clamp(2.5rem, 6vw, 3.75rem);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  color: var(--color-text-primary);
+  max-width: 900px;
+  margin-bottom: 1rem;
+}
+
+.hero-subtitle {
+  font-size: 1.05rem;
+  color: var(--color-text-secondary);
+  max-width: 520px;
+  line-height: 1.6;
+  margin-bottom: 2.5rem;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* ─── Action Cards ───
+   Real <button> elements (not clickable divs) — keyboard-operable, and the
+   focus ring shows up correctly for kiosk users tabbing with a keyboard. */
+
+.action-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.25rem;
+  width: 100%;
+  max-width: 700px;
+  margin-top: 1.25rem;
+}
+
+.action-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 2rem;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s var(--ease-expo), transform 0.2s var(--ease-expo);
+  font-family: inherit;
+  color: inherit;
+  width: 100%;
+}
+
+.action-card:hover, .action-card:focus-visible {
+  border-color: var(--color-accent-border);
+  transform: translateY(-2px);
+  outline: none;
+}
+
+.action-card-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.5rem;
+  color: var(--color-text-primary);
+  margin-bottom: 0.35rem;
+}
+
+.action-card-desc {
+  font-size: 0.875rem;
+  color: var(--color-text-tertiary);
+  line-height: 1.5;
+}
+
+/* ─── Forms ─── */
+
+.form-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 2rem;
+  width: 100%;
+  max-width: 480px;
+  margin-top: 0.5rem;
+}
+
+.form-group {
+  margin-bottom: 1.25rem;
+  text-align: left;
+}
+
+.form-label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-secondary);
+  margin-bottom: 0.4rem;
+}
+
+.form-input {
+  width: 100%;
+  background: var(--color-background);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 0.875rem 1rem;
+  color: var(--color-text-primary);
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  outline: none;
+  transition: border-color 0.2s var(--ease-expo), box-shadow 0.2s var(--ease-expo);
+}
+
+.form-input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.form-input:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-muted);
+}
+
+.form-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin: 1rem 0;
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: var(--color-text-secondary);
+  line-height: 1.45;
+}
+
+.form-consent input {
+  margin-top: 0.2rem;
+  width: 1.1rem;
+  height: 1.1rem;
+  flex-shrink: 0;
+  accent-color: var(--color-accent);
+}
+
+/* ─── Inline status banners (e.g. GPS/camera permission notices) ─── */
+
+.status-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  border-radius: var(--radius-md);
+  padding: 0.75rem 1rem;
+  font-size: 0.85rem;
+  text-align: left;
+  line-height: 1.4;
+}
+
+.status-banner--warning {
+  background: var(--color-warning-muted);
+  border: 1px solid var(--color-warning-border);
+  color: var(--color-warning);
+}
+
+.status-banner--danger {
+  background: var(--color-danger-muted);
+  border: 1px solid var(--color-danger-border);
+  color: var(--color-danger);
+}
+
+/* ─── Camera / Capture ─── */
+
+/* Literal black/white below (not tokens) is deliberate: this overlay sits
+   directly on live, unpredictable camera video rather than app chrome, so
+   it needs fixed max-contrast values independent of the token system. */
+.camera-wrapper {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  background: #000;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.camera-feed {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+}
+
+.camera-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2.5rem;
+  z-index: 60;
+  pointer-events: none;
+}
+
+.camera-header {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  pointer-events: auto;
+}
+
+.camera-header-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #fff;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.camera-header .btn-back {
+  color: #fff;
+}
+
+/* Reticle with a Verify Cyan scan-line sweep — the literal "this is a
+   biometric scan in progress" motif, tying the accent color to what's
+   actually happening rather than decorating for its own sake. */
+.reticle-box {
+  width: 280px;
+  height: 280px;
+  position: relative;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.reticle-corner {
+  position: absolute;
+  width: 2rem;
+  height: 2rem;
+  border-color: var(--color-verify);
+  border-style: solid;
+}
+
+.corner-tl { top: 0; left: 0; border-width: 3px 0 0 3px; border-top-left-radius: var(--radius-md); }
+.corner-tr { top: 0; right: 0; border-width: 3px 3px 0 0; border-top-right-radius: var(--radius-md); }
+.corner-bl { bottom: 0; left: 0; border-width: 0 0 3px 3px; border-bottom-left-radius: var(--radius-md); }
+.corner-br { bottom: 0; right: 0; border-width: 0 3px 3px 0; border-bottom-right-radius: var(--radius-md); }
+
+.reticle-scanline {
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--color-verify), transparent);
+  box-shadow: 0 0 8px 1px var(--color-verify);
+  animation: scan-sweep 2.2s ease-in-out infinite;
+}
+
+@keyframes scan-sweep {
+  0%   { top: 10%; opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { top: 90%; opacity: 0; }
+}
+
+.capture-hint {
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(0, 0, 0, 0.55);
+  padding: 0.5rem 1.25rem;
+  border-radius: 9999px;
+  backdrop-filter: blur(4px);
+}
+
+.capture-btn-trigger {
+  width: 5rem;
+  height: 5rem;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.15);
+  border: 4px solid #fff;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: transform 0.2s var(--ease-expo), background-color 0.2s var(--ease-expo);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.capture-btn-trigger:hover:not(:disabled) {
+  transform: scale(1.06);
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.capture-btn-trigger:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.capture-btn-inner {
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 9999px;
+  background: #fff;
+}
+
+/* ─── Processing (indeterminate — no fake per-step timing) ─── */
+
+.processing-spinner {
+  width: 4rem;
+  height: 4rem;
+  border: 3px solid var(--color-border);
+  border-top-color: var(--color-verify);
+  border-radius: 50%;
+  animation: rotate 0.9s linear infinite;
+  margin-bottom: 2.5rem;
+}
+
+@keyframes rotate {
+  to { transform: rotate(360deg); }
+}
+
+.processing-message {
+  font-size: 0.95rem;
+  color: var(--color-text-secondary);
+  min-height: 1.5em;
+}
+
+/* ─── Result badges ─── */
+
+.result-badge {
+  width: 5rem;
+  height: 5rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 1.5rem;
+}
+
+.result-badge--verify { background: var(--color-verify-muted); border: 1px solid var(--color-verify-border); color: var(--color-verify); }
+.result-badge--warning { background: var(--color-warning-muted); border: 1px solid var(--color-warning-border); color: var(--color-warning); }
+.result-badge--danger { background: var(--color-danger-muted); border: 1px solid var(--color-danger-border); color: var(--color-danger); }
+
+/* ─── Attendance list rows ─── */
+
+.attendance-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  text-align: left;
+}
+
+.attendance-row:last-child {
+  border-bottom: none;
+}
+
+/* ─── Animations ─── */
+
+.fade-in {
+  animation: fadeIn 0.5s var(--ease-expo) forwards;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}

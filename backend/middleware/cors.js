@@ -7,11 +7,14 @@ const corsOptions = {
     if (!origin) return callback(null, true);
 
     const allowedOrigins = [
-      "http://localhost:3000", // Next.js development server
-      "http://localhost:3001", // Alternative port
+      "http://localhost:3000", // Next.js dashboard (dev)
+      "http://localhost:3001", // Alternative dashboard port
+      "http://localhost:5173", // Vite scanner kiosk (dev)
       "http://127.0.0.1:3000",
       "http://127.0.0.1:3001",
-      process.env.FRONTEND_URL, // Production frontend URL
+      "http://127.0.0.1:5173",
+      process.env.FRONTEND_URL,  // Production dashboard URL
+      process.env.SCANNER_URL,   // Production scanner kiosk URL
     ].filter(Boolean); // Remove undefined values
 
     if (allowedOrigins.indexOf(origin) !== -1) {

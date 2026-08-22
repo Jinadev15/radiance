@@ -1,125 +1,269 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-@custom-variant dark (&:is(.dark *));
+/* ─── Design Tokens ───
+   Light is the default surface (matches Truein and enterprise-SaaS
+   convention — easier to scan dense data tables for long stretches). The
+   `.dark` class, toggled by next-themes (components/theme-provider.tsx),
+   redefines the same token names for the dark variant. Everything below
+   consumes tokens, never a literal color, so both themes stay correct. */
+
+@theme inline {
+  --font-display: var(--font-plex-sans), "IBM Plex Sans", system-ui, sans-serif;
+  --font-body: var(--font-inter), "Inter", system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+
+  --ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  --color-background: var(--token-background);
+  --color-surface: var(--token-surface);
+  --color-surface-elevated: var(--token-surface-elevated);
+  --color-border: var(--token-border);
+  --color-border-subtle: var(--token-border-subtle);
+
+  --color-text-primary: var(--token-text-primary);
+  --color-text-secondary: var(--token-text-secondary);
+  --color-text-tertiary: var(--token-text-tertiary);
+  --color-on-accent: var(--token-on-accent);
+
+  --color-accent: var(--token-accent);
+  --color-accent-muted: var(--token-accent-muted);
+  --color-accent-border: var(--token-accent-border);
+
+  /* "Verify" — reserved for liveness/scan/identity-confirmed states only.
+     Kept distinct from --color-success so "face + liveness verified" reads
+     differently from a generic "saved successfully" green. */
+  --color-verify: var(--token-verify);
+  --color-verify-muted: var(--token-verify-muted);
+  --color-verify-border: var(--token-verify-border);
+
+  --color-success: var(--token-success);
+  --color-success-muted: var(--token-success-muted);
+  --color-success-border: var(--token-success-border);
+
+  --color-warning: var(--token-warning);
+  --color-warning-muted: var(--token-warning-muted);
+  --color-warning-border: var(--token-warning-border);
+
+  --color-danger: var(--token-danger);
+  --color-danger-muted: var(--token-danger-muted);
+  --color-danger-border: var(--token-danger-border);
+}
 
 :root {
-  --background: oklch(0.98 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.4 0.13 259);
-  --primary-foreground: oklch(0.98 0 0);
-  --secondary: oklch(0.96 0.01 240);
-  --secondary-foreground: oklch(0.2 0 0);
-  --muted: oklch(0.94 0 0);
-  --muted-foreground: oklch(0.5 0 0);
-  --accent: oklch(0.45 0.14 260);
-  --accent-foreground: oklch(0.98 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.98 0 0);
-  --border: oklch(0.92 0 0);
-  --input: oklch(0.94 0 0);
-  --ring: oklch(0.45 0.14 260);
-  --chart-1: oklch(0.4 0.13 259);
-  --chart-2: oklch(0.6 0.12 200);
-  --chart-3: oklch(0.65 0.11 150);
-  --chart-4: oklch(0.5 0.14 280);
-  --chart-5: oklch(0.55 0.13 230);
-  --radius: 0.5rem;
-  --sidebar: oklch(0.12 0 0);
-  --sidebar-foreground: oklch(0.95 0 0);
-  --sidebar-primary: oklch(0.4 0.13 259);
-  --sidebar-primary-foreground: oklch(0.98 0 0);
-  --sidebar-accent: oklch(0.25 0 0);
-  --sidebar-accent-foreground: oklch(0.95 0 0);
-  --sidebar-border: oklch(0.2 0 0);
-  --sidebar-ring: oklch(0.4 0.13 259);
+  /* Cool, blue-hue-biased neutrals (hue ~255) instead of pure grey —
+     reads as deliberately chosen, ties to the Signal Blue accent below. */
+  --token-background: oklch(0.971 0.004 255);
+  --token-surface: oklch(0.995 0.002 255);
+  --token-surface-elevated: oklch(1 0 0);
+  --token-border: oklch(0.885 0.008 255);
+  --token-border-subtle: oklch(0.93 0.006 255);
+
+  --token-text-primary: oklch(0.225 0.02 258);
+  --token-text-secondary: oklch(0.465 0.016 258);
+  --token-text-tertiary: oklch(0.615 0.013 258);
+  --token-on-accent: oklch(0.99 0.004 255);
+
+  /* Signal Blue — primary interactive color. Precise and cool rather than
+     a stock Tailwind blue, chosen for the security/identity category. */
+  --token-accent: oklch(0.47 0.135 253);
+  --token-accent-muted: oklch(0.47 0.135 253 / 0.09);
+  --token-accent-border: oklch(0.47 0.135 253 / 0.24);
+
+  --token-verify: oklch(0.635 0.128 199);
+  --token-verify-muted: oklch(0.635 0.128 199 / 0.1);
+  --token-verify-border: oklch(0.635 0.128 199 / 0.24);
+
+  --token-success: oklch(0.6 0.145 152);
+  --token-success-muted: oklch(0.6 0.145 152 / 0.09);
+  --token-success-border: oklch(0.6 0.145 152 / 0.22);
+
+  --token-warning: oklch(0.665 0.155 66);
+  --token-warning-muted: oklch(0.665 0.155 66 / 0.11);
+  --token-warning-border: oklch(0.665 0.155 66 / 0.24);
+
+  --token-danger: oklch(0.55 0.21 25);
+  --token-danger-muted: oklch(0.55 0.21 25 / 0.09);
+  --token-danger-border: oklch(0.55 0.21 25 / 0.22);
 }
 
 .dark {
-  --background: oklch(0.1 0 0);
-  --foreground: oklch(0.95 0 0);
-  --card: oklch(0.145 0 0);
-  --card-foreground: oklch(0.95 0 0);
-  --popover: oklch(0.145 0 0);
-  --popover-foreground: oklch(0.95 0 0);
-  --primary: oklch(0.5 0.15 260);
-  --primary-foreground: oklch(0.1 0 0);
-  --secondary: oklch(0.2 0 0);
-  --secondary-foreground: oklch(0.95 0 0);
-  --muted: oklch(0.25 0 0);
-  --muted-foreground: oklch(0.6 0 0);
-  --accent: oklch(0.55 0.16 260);
-  --accent-foreground: oklch(0.1 0 0);
-  --destructive: oklch(0.396 0.141 25.723);
-  --destructive-foreground: oklch(0.95 0 0);
-  --border: oklch(0.2 0 0);
-  --input: oklch(0.18 0 0);
-  --ring: oklch(0.5 0.15 260);
-  --chart-1: oklch(0.5 0.15 260);
-  --chart-2: oklch(0.65 0.13 200);
-  --chart-3: oklch(0.7 0.12 150);
-  --chart-4: oklch(0.6 0.15 280);
-  --chart-5: oklch(0.65 0.14 230);
-  --sidebar: oklch(0.12 0 0);
-  --sidebar-foreground: oklch(0.95 0 0);
-  --sidebar-primary: oklch(0.5 0.15 260);
-  --sidebar-primary-foreground: oklch(0.1 0 0);
-  --sidebar-accent: oklch(0.25 0 0);
-  --sidebar-accent-foreground: oklch(0.95 0 0);
-  --sidebar-border: oklch(0.2 0 0);
-  --sidebar-ring: oklch(0.5 0.15 260);
-}
+  --token-background: oklch(0.165 0.012 258);
+  --token-surface: oklch(0.205 0.014 258);
+  --token-surface-elevated: oklch(0.245 0.016 258);
+  --token-border: oklch(0.325 0.016 258);
+  --token-border-subtle: oklch(0.26 0.014 258);
 
-@theme inline {
-  --font-sans: "Geist", "Geist Fallback";
-  --font-mono: "Geist Mono", "Geist Mono Fallback";
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
-  --color-border: var(--border);
-  --color-input: var(--input);
-  --color-ring: var(--ring);
-  --color-chart-1: var(--chart-1);
-  --color-chart-2: var(--chart-2);
-  --color-chart-3: var(--chart-3);
-  --color-chart-4: var(--chart-4);
-  --color-chart-5: var(--chart-5);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-  --color-sidebar: var(--sidebar);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-ring: var(--sidebar-ring);
+  --token-text-primary: oklch(0.955 0.006 255);
+  --token-text-secondary: oklch(0.685 0.013 255);
+  --token-text-tertiary: oklch(0.5 0.013 255);
+  --token-on-accent: oklch(0.99 0.004 255);
+
+  --token-accent: oklch(0.635 0.155 253);
+  --token-accent-muted: oklch(0.635 0.155 253 / 0.14);
+  --token-accent-border: oklch(0.635 0.155 253 / 0.3);
+
+  --token-verify: oklch(0.75 0.13 197);
+  --token-verify-muted: oklch(0.75 0.13 197 / 0.14);
+  --token-verify-border: oklch(0.75 0.13 197 / 0.3);
+
+  --token-success: oklch(0.7 0.16 152);
+  --token-success-muted: oklch(0.7 0.16 152 / 0.13);
+  --token-success-border: oklch(0.7 0.16 152 / 0.28);
+
+  --token-warning: oklch(0.76 0.15 70);
+  --token-warning-muted: oklch(0.76 0.15 70 / 0.13);
+  --token-warning-border: oklch(0.76 0.15 70 / 0.28);
+
+  --token-danger: oklch(0.66 0.19 25);
+  --token-danger-muted: oklch(0.66 0.19 25 / 0.13);
+  --token-danger-border: oklch(0.66 0.19 25 / 0.28);
 }
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    border-color: var(--color-border);
   }
   body {
-    @apply bg-background text-foreground;
+    background-color: var(--color-background);
+    color: var(--color-text-primary);
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ─── Motion Tokens ─── */
+
+@keyframes enter-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes subtle-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.animate-enter-up {
+  animation: enter-up 0.4s var(--ease-expo) forwards;
+}
+
+.animate-enter-up-delay {
+  animation: enter-up 0.4s var(--ease-expo) 0.08s forwards;
+  opacity: 0;
+}
+
+.animate-enter-up-delay-2 {
+  animation: enter-up 0.4s var(--ease-expo) 0.16s forwards;
+  opacity: 0;
+}
+
+.animate-subtle-pulse {
+  animation: subtle-pulse 2.5s ease-in-out infinite;
+}
+
+/* ─── Structural Utilities ─── */
+
+.surface {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+}
+
+.surface-elevated {
+  background-color: var(--color-surface-elevated);
+  border: 1px solid var(--color-border);
+}
+
+.border-structural {
+  border-color: var(--color-border);
+}
+
+.text-display {
+  font-family: var(--font-display);
+  font-style: normal;
+  letter-spacing: -0.015em;
+}
+
+.text-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── Form Controls ─── */
+
+.input-base {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+  font-size: 0.875rem;
+  padding: 0.5rem 0.75rem;
+  transition: border-color 0.2s var(--ease-expo), box-shadow 0.2s var(--ease-expo);
+}
+
+.input-base:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-muted);
+}
+
+.input-base::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+/* ─── Status Badges ─── */
+
+.badge-success {
+  background-color: var(--color-success-muted);
+  color: var(--color-success);
+  border: 1px solid var(--color-success-border);
+}
+
+.badge-warning {
+  background-color: var(--color-warning-muted);
+  color: var(--color-warning);
+  border: 1px solid var(--color-warning-border);
+}
+
+.badge-danger {
+  background-color: var(--color-danger-muted);
+  color: var(--color-danger);
+  border: 1px solid var(--color-danger-border);
+}
+
+.badge-accent {
+  background-color: var(--color-accent-muted);
+  color: var(--color-accent);
+  border: 1px solid var(--color-accent-border);
+}
+
+.badge-verify {
+  background-color: var(--color-verify-muted);
+  color: var(--color-verify);
+  border: 1px solid var(--color-verify-border);
 }

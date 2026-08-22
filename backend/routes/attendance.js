@@ -1,345 +1,181 @@
-const express = require("express");
-const { body, validationResult } = require("express-validator");
-const axios = require("axios");
-const Attendance = require("../models/Attendance");
-const Student = require("../models/Student");
-const Class = require("../models/Class");
-const auth = require("../middleware/auth");
-
+const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
+const { query, body, validationResult } = require('express-validator');
+const AttendanceLog = require('../models/AttendanceLog');
+const Employee = require('../models/Employee');
+require('../models/WorkLocation');
+require('../models/ServiceTag');
+const auth = require('../middleware/auth');
+const { requireAdminOrHr } = auth;
 
-// @route   GET /api/attendance
-// @desc    Get attendance records with filters
-// @access  Private
-router.get("/", auth, async (req, res) => {
-  try {
-    const { studentId, classId, date, status } = req.query;
+// Supervisors only see attendance for employees at their own site.
+async function supervisorEmployeeIds(req) {
+  if (req.user.role !== 'supervisor' || !req.user.workLocation) return null;
+  const employees = await Employee.find({ workLocation: req.user.workLocation }).select('_id');
+  return employees.map(e => e._id);
+}
 
-    let filter = {};
-
-    if (studentId) {
-      const student = await Student.findOne({ studentId });
-      if (student) {
-        filter.student = student._id;
-      }
-    }
-
-    if (classId) {
-      filter.class = classId;
-    }
-
-    if (date) {
-      const startDate = new Date(date);
-      const endDate = new Date(date);
-      endDate.setDate(endDate.getDate() + 1);
-      filter.date = { $gte: startDate, $lt: endDate };
-    }
-
-    if (status) {
-      filter.status = status;
-    }
-
-    const attendance = await Attendance.find(filter)
-      .populate("student", "studentId name")
-      .populate("class", "name grade section")
-      .sort({ date: -1, checkInTime: -1 });
-
-    res.json(attendance);
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send("Server error");
-  }
-});
-
-// @route   GET /api/attendance/:id
-// @desc    Get attendance record by ID
-// @access  Private
-router.get("/:id", auth, async (req, res) => {
-  try {
-    const attendance = await Attendance.findById(req.params.id)
-      .populate("student", "studentId name email")
-      .populate("class", "name grade section");
-
-    if (!attendance) {
-      return res.status(404).json({ msg: "Attendance record not found" });
-    }
-
-    res.json(attendance);
-  } catch (err) {
-    console.error(err.message);
-    if (err.kind === "ObjectId") {
-      return res.status(404).json({ msg: "Attendance record not found" });
-    }
-    res.status(500).send("Server error");
-  }
-});
-
-// @route   POST /api/attendance/mark
-// @desc    Mark attendance using facial recognition
-// @access  Private
-router.post(
-  "/mark",
+// GET /api/v1/attendance
+router.get('/', auth,
   [
-    auth,
-    body("classId", "Class ID is required").not().isEmpty(),
-    body("faceImage", "Face image is required").not().isEmpty(),
+    query('date').optional().isISO8601(),
+    query('employeeId').optional().isMongoId(),
+    query('status').optional().isIn(['VALID', 'LATE', 'EARLY_DEPARTURE', 'LOCATION_MISMATCH', 'SPOOF_ATTEMPT']),
+    query('limit').optional().isInt({ min: 1, max: 500 }).toInt(),
   ],
   async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
     try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
+      if (mongoose.connection.readyState !== 1) return res.json([]);
+
+      const { date, employeeId, status, limit = 100 } = req.query;
+      const filter = {};
+      if (date) filter.date = date;
+      if (status) filter.status = status;
+
+      const scopedIds = await supervisorEmployeeIds(req);
+      if (scopedIds) {
+        const scopedIdStrings = scopedIds.map(id => id.toString());
+        if (employeeId && !scopedIdStrings.includes(employeeId)) {
+          return res.json([]); // asking about someone outside their site
+        }
+        filter.employee = employeeId ? employeeId : { $in: scopedIds };
+      } else if (employeeId) {
+        filter.employee = employeeId;
       }
 
-      const { classId, faceImage } = req.body;
+      const logs = await AttendanceLog.find(filter)
+        .populate('employee', 'name employeeId phone workLocation')
+        .sort({ clockInTime: -1 })
+        .limit(limit);
 
-      // Check if class exists
-      const classData = await Class.findById(classId);
-      if (!classData) {
-        return res.status(404).json({ msg: "Class not found" });
-      }
-
-      // Get all active students in the class
-      const students = await Student.find({
-        class: classId,
-        isActive: true,
-      }).select("studentId name faceEmbedding");
-
-      if (students.length === 0) {
-        return res
-          .status(404)
-          .json({ msg: "No active students found in this class" });
-      }
-
-      // Extract face embedding from the captured image
-      try {
-        const mlResponse = await axios.post(
-          `${process.env.ML_SERVICE_URL}/extract-embedding`,
-          {
-            image: faceImage,
-          }
-        );
-
-        const capturedEmbedding = mlResponse.data.embedding;
-
-        // Find the best match using the ML service
-        const recognitionResponse = await axios.post(
-          `${process.env.ML_SERVICE_URL}/recognize-face`,
-          {
-            embedding: capturedEmbedding,
-            candidates: students.map((student) => ({
-              id: student._id.toString(),
-              embedding: student.faceEmbedding,
-            })),
-          }
-        );
-
-        const { studentId, confidence } = recognitionResponse.data;
-
-        if (!studentId || confidence < 0.7) {
-          // Threshold for recognition
-          return res.status(400).json({
-            msg: "Face not recognized. Please try again or contact administrator.",
-            confidence: confidence || 0,
-          });
-        }
-
-        const student = await Student.findById(studentId);
-        if (!student) {
-          return res.status(404).json({ msg: "Student not found" });
-        }
-
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
-        // Check if attendance already marked for today
-        const existingAttendance = await Attendance.findOne({
-          student: studentId,
-          class: classId,
-          date: {
-            $gte: today,
-            $lt: new Date(today.getTime() + 24 * 60 * 60 * 1000),
-          },
-        });
-
-        if (existingAttendance) {
-          return res
-            .status(400)
-            .json({ msg: "Attendance already marked for today" });
-        }
-
-        // Determine status based on time
-        const now = new Date();
-        const hour = now.getHours();
-        let status = "Present";
-
-        if (hour >= 9) {
-          // Assuming class starts at 9 AM
-          status = "Late";
-        }
-
-        // Create attendance record
-        const attendance = new Attendance({
-          student: studentId,
-          class: classId,
-          date: now,
-          status,
-          checkInTime: now,
-          confidence,
-          markedBy: "Auto",
-        });
-
-        await attendance.save();
-        await attendance.populate("student", "studentId name");
-        await attendance.populate("class", "name grade section");
-
-        res.json({
-          msg: "Attendance marked successfully",
-          attendance,
-          confidence,
-        });
-      } catch (mlError) {
-        console.error("ML Service Error:", mlError.message);
-        return res
-          .status(500)
-          .json({ msg: "Failed to process face recognition" });
-      }
-    } catch (err) {
-      console.error(err.message);
-      res.status(500).send("Server error");
+      res.json(logs);
+    } catch (error) {
+      console.warn('[Attendance Warning]', error.message);
+      res.json([]);
     }
   }
 );
 
-// @route   POST /api/attendance/manual
-// @desc    Manually mark attendance
-// @access  Private
-router.post(
-  "/manual",
+// GET /api/v1/attendance/today
+router.get('/today', auth, async (req, res) => {
+  try {
+    if (mongoose.connection.readyState !== 1) return res.json([]);
+
+    const today = new Date().toISOString().split('T')[0];
+    const filter = { date: today };
+    const scopedIds = await supervisorEmployeeIds(req);
+    if (scopedIds) filter.employee = { $in: scopedIds };
+
+    const logs = await AttendanceLog.find(filter)
+      .populate('employee', 'name employeeId')
+      .sort({ clockInTime: -1 });
+    res.json(logs);
+  } catch (error) {
+    console.warn('[Attendance Today Warning]', error.message);
+    res.json([]);
+  }
+});
+
+// GET /api/v1/attendance/export — optionally scoped to one site and/or service,
+// which is what turns this from a flat log dump into something a client
+// invoice can actually be built from.
+router.get('/export', auth, async (req, res) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="attendance_${new Date().toISOString().split('T')[0]}.csv"`);
+      return res.send('Employee ID,Name,Phone,Site,Service,Date,Clock In,Clock Out,Total Hours,Status,Confidence\n');
+    }
+
+    const { startDate, endDate, siteName, service } = req.query;
+    const filter = {};
+    if (startDate) filter.date = { ...filter.date, $gte: startDate };
+    if (endDate) filter.date = { ...filter.date, $lte: endDate };
+    if (siteName) filter.siteName = siteName;
+    if (service) filter.service = service;
+
+    const scopedIds = await supervisorEmployeeIds(req);
+    if (scopedIds) filter.employee = { $in: scopedIds };
+
+    const logs = await AttendanceLog.find(filter)
+      .populate('employee', 'name employeeId phone')
+      .sort({ date: -1, clockInTime: -1 });
+
+    const csvRows = ['Employee ID,Name,Phone,Site,Service,Date,Clock In,Clock Out,Total Hours,Status,Confidence'];
+    logs.forEach(log => {
+      const emp = log.employee || {};
+      const clockIn = log.clockInTime ? new Date(log.clockInTime).toLocaleTimeString() : '';
+      const clockOut = log.clockOutTime ? new Date(log.clockOutTime).toLocaleTimeString() : '';
+      csvRows.push([
+        emp.employeeId || '',
+        `"${emp.name || ''}"`,
+        emp.phone || '',
+        `"${log.siteName || ''}"`,
+        `"${log.service || ''}"`,
+        log.date,
+        clockIn,
+        clockOut,
+        log.totalHours || '',
+        log.status,
+        log.confidence ? (log.confidence * 100).toFixed(1) + '%' : ''
+      ].join(','));
+    });
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="attendance_${new Date().toISOString().split('T')[0]}.csv"`);
+    res.send(csvRows.join('\n'));
+  } catch (error) {
+    console.error('[Attendance/Export]', error.message);
+    res.status(500).json({ error: 'Export failed' });
+  }
+});
+
+// PUT /api/v1/attendance/manual — admin/HR corrects or backfills a record
+// (e.g. resolving an approved regularization request). Creates the log if
+// none exists for that employee/date yet.
+router.put('/manual', auth, requireAdminOrHr,
   [
-    auth,
-    body("studentId", "Student ID is required").not().isEmpty(),
-    body("classId", "Class ID is required").not().isEmpty(),
-    body("status", "Status is required").isIn(["Present", "Absent", "Late"]),
-    body("date", "Date is required").isISO8601(),
+    body('employeeId').isMongoId().withMessage('Valid employee ID required'),
+    body('date').isISO8601().withMessage('Valid date required'),
+    body('clockInTime').optional({ nullable: true }).isISO8601().withMessage('Invalid clock-in time'),
+    body('clockOutTime').optional({ nullable: true }).isISO8601().withMessage('Invalid clock-out time'),
   ],
   async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
     try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
+      const { employeeId, date, clockInTime, clockOutTime, notes } = req.body;
+      if (!clockInTime) return res.status(400).json({ error: 'A clock-in time is required.' });
+
+      let log = await AttendanceLog.findOne({ employee: employeeId, date });
+      if (!log) {
+        const employee = await Employee.findById(employeeId).populate('workLocation', 'name').populate('serviceTag', 'name');
+        if (!employee) return res.status(404).json({ error: 'Employee not found' });
+        log = new AttendanceLog({
+          employee: employeeId,
+          date,
+          status: 'VALID',
+          siteName: employee.workLocation?.name || null,
+          service: employee.serviceTag?.name || null,
+        });
       }
+      log.clockInTime = new Date(clockInTime);
+      if (clockOutTime) log.clockOutTime = new Date(clockOutTime);
+      log.markedBy = 'MANUAL';
+      log.notes = [log.notes, notes, `Manually corrected by ${req.user.role} on ${new Date().toLocaleDateString()}.`]
+        .filter(Boolean).join(' ');
+      await log.save();
 
-      const { studentId, classId, status, date, notes } = req.body;
-
-      // Find student by studentId
-      const student = await Student.findOne({ studentId });
-      if (!student) {
-        return res.status(404).json({ msg: "Student not found" });
-      }
-
-      // Check if class exists
-      const classData = await Class.findById(classId);
-      if (!classData) {
-        return res.status(404).json({ msg: "Class not found" });
-      }
-
-      // Check if attendance already exists for this student, class, and date
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const tomorrow = new Date(today);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-
-      const existingAttendance = await Attendance.findOne({
-        student: student._id,
-        class: classId,
-        date: { $gte: today, $lt: tomorrow },
-      });
-
-      if (existingAttendance) {
-        return res
-          .status(400)
-          .json({ msg: "Attendance already marked for today" });
-      }
-
-      // Create attendance record
-      const attendance = new Attendance({
-        student: student._id,
-        class: classId,
-        date: new Date(),
-        status,
-        checkInTime: new Date(),
-        markedBy: req.user.id,
-        notes,
-      });
-
-      await attendance.save();
-      await attendance.populate("student", "studentId name");
-      await attendance.populate("class", "name grade section");
-
-      res.json({
-        msg: "Attendance marked successfully",
-        attendance,
-      });
-    } catch (err) {
-      console.error(err.message);
-      res.status(500).send("Server error");
+      res.json({ success: true, log });
+    } catch (error) {
+      if (error.code === 11000) return res.status(400).json({ error: 'A record for this employee and date already exists.' });
+      console.error('[Attendance/Manual]', error.message);
+      res.status(500).json({ error: 'Failed to save manual correction' });
     }
   }
 );
-
-// @route   PUT /api/attendance/:id
-// @desc    Update attendance record
-// @access  Private
-router.put("/:id", auth, async (req, res) => {
-  try {
-    const { status, notes } = req.body;
-
-    let attendance = await Attendance.findById(req.params.id);
-
-    if (!attendance) {
-      return res.status(404).json({ msg: "Attendance record not found" });
-    }
-
-    // Update fields
-    if (status) attendance.status = status;
-    if (notes !== undefined) attendance.notes = notes;
-
-    await attendance.save();
-    await attendance.populate("student", "studentId name");
-    await attendance.populate("class", "name grade section");
-
-    res.json(attendance);
-  } catch (err) {
-    console.error(err.message);
-    if (err.kind === "ObjectId") {
-      return res.status(404).json({ msg: "Attendance record not found" });
-    }
-    res.status(500).send("Server error");
-  }
-});
-
-// @route   DELETE /api/attendance/:id
-// @desc    Delete attendance record
-// @access  Private
-router.delete("/:id", auth, async (req, res) => {
-  try {
-    const attendance = await Attendance.findById(req.params.id);
-
-    if (!attendance) {
-      return res.status(404).json({ msg: "Attendance record not found" });
-    }
-
-    await attendance.remove();
-
-    res.json({ msg: "Attendance record removed" });
-  } catch (err) {
-    console.error(err.message);
-    if (err.kind === "ObjectId") {
-      return res.status(404).json({ msg: "Attendance record not found" });
-    }
-    res.status(500).send("Server error");
-  }
-});
 
 module.exports = router;

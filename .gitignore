@@ -1,2 +1,39 @@
+# Dependencies
 node_modules/
 backend/node_modules/
+frontend/node_modules/
+ml-service/venv/
+ml-service/env/
+
+# Environment Variables (CRITICAL SECURITY)
+.env
+.env.local
+.env.development
+.env.production
+
+# Next.js Build Output
+frontend/.next/
+frontend/out/
+frontend/build/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ML model weights (downloaded via ml-service/README.md, not committed)
+ml-service/models/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Build output
+scanner/dist/
+frontend/tsconfig.tsbuildinfo
+
+# Claude Code local tooling/session state (not project source)
+.claude/
+
+# Generated codebase dumps
+repopack-output.txt
