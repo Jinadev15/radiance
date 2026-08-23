@@ -6,6 +6,7 @@ const axios = require('axios');
 const Employee = require('../models/Employee');
 const SpoofAttemptLog = require('../models/SpoofAttemptLog');
 const { notifyAdmins } = require('./notify');
+const { callWithRetry } = require('./mlServiceCall');
 // Registers the models .populate('workLocation'|'shiftTemplate'|'serviceTag') needs.
 require('../models/WorkLocation');
 require('../models/ShiftTemplate');
@@ -36,7 +37,9 @@ async function identifyAndVerify(images, action) {
   // 1. Extract embedding from the first frame
   let embedding;
   try {
-    const extractRes = await axios.post(`${ML_SERVICE_URL}/extract-embedding`, { image: images[0] }, { timeout: 5000 });
+    const extractRes = await callWithRetry((timeout) =>
+      axios.post(`${ML_SERVICE_URL}/extract-embedding`, { image: images[0] }, { timeout })
+    );
     embedding = extractRes.data.embedding;
     if (!extractRes.data.face_detected || !embedding) {
       throw { status: 400, error: 'No face detected in the image.' };
@@ -70,7 +73,9 @@ async function identifyAndVerify(images, action) {
   // 3. Recognize
   let matchResult;
   try {
-    const recognizeRes = await axios.post(`${ML_SERVICE_URL}/recognize-face`, { embedding, candidates }, { timeout: 5000 });
+    const recognizeRes = await callWithRetry((timeout) =>
+      axios.post(`${ML_SERVICE_URL}/recognize-face`, { embedding, candidates }, { timeout })
+    );
     matchResult = recognizeRes.data;
   } catch (err) {
     throw { status: 503, error: 'Face recognition service unavailable' };
@@ -86,7 +91,9 @@ async function identifyAndVerify(images, action) {
   // 4. Liveness — checked last, now that a failure can be attributed to someone
   let liveness;
   try {
-    const livenessRes = await axios.post(`${ML_SERVICE_URL}/liveness-check`, { images }, { timeout: 4000 });
+    const livenessRes = await callWithRetry((timeout) =>
+      axios.post(`${ML_SERVICE_URL}/liveness-check`, { images }, { timeout })
+    , { fastTimeout: 4000 });
     liveness = livenessRes.data;
   } catch (err) {
     throw { status: 503, error: 'Face recognition service unavailable' };

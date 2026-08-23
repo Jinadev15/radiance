@@ -7,6 +7,7 @@ const Employee = require('../models/Employee');
 const Contractor = require('../models/Contractor');
 const { findDuplicateFace } = require('../utils/duplicateFaceCheck');
 const { withLock } = require('../utils/asyncMutex');
+const { callWithRetry } = require('../utils/mlServiceCall');
 
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
 
@@ -74,7 +75,9 @@ router.post('/',
 
       let faceEmbedding = [];
       try {
-        const mlRes = await axios.post(`${ML_SERVICE_URL}/extract-embedding`, { image: frames[0] }, { timeout: 5000 });
+        const mlRes = await callWithRetry((timeout) =>
+          axios.post(`${ML_SERVICE_URL}/extract-embedding`, { image: frames[0] }, { timeout })
+        );
         faceEmbedding = mlRes.data.embedding || [];
         if (!mlRes.data.face_detected || faceEmbedding.length === 0) {
           return res.status(400).json({ error: 'No face detected in the image. Please align face clearly.' });
@@ -93,7 +96,9 @@ router.post('/',
       // faces that already have a profile, so it doesn't cover this case.
       if (frames.length >= 2) {
         try {
-          const livenessRes = await axios.post(`${ML_SERVICE_URL}/liveness-check`, { images: frames }, { timeout: 4000 });
+          const livenessRes = await callWithRetry((timeout) =>
+            axios.post(`${ML_SERVICE_URL}/liveness-check`, { images: frames }, { timeout })
+          , { fastTimeout: 4000 });
           if (!livenessRes.data || livenessRes.data.is_live !== true) {
             return res.status(403).json({ error: 'Liveness check failed. Please face the camera directly in good lighting and try again.' });
           }
