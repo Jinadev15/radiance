@@ -42,7 +42,14 @@ async function identifyAndVerify(images, action) {
       throw { status: 400, error: 'No face detected in the image.' };
     }
   } catch (err) {
-    if (err.status) throw err;
+    // Distinguish "one of our own already-formed { status, error } throws"
+    // from a raw axios error — newer axios versions add a `.status`
+    // shortcut property directly onto AxiosError, which made this check
+    // (originally just `if (err.status)`) accidentally match real axios
+    // errors too, letting them leak through unpacked instead of being
+    // translated below. `isAxiosError` is the reliable discriminator axios
+    // itself sets on every error it throws.
+    if (err.status && !err.isAxiosError) throw err;
     if (err.response && err.response.status === 422) {
       throw { status: 400, error: err.response.data?.detail || 'No face detected in the image. Please align face clearly.' };
     }

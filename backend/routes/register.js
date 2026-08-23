@@ -116,7 +116,10 @@ router.post('/',
               throw { status: 409, error: `This face is already registered as ${duplicate.name} (${duplicate.employeeId}). Each person can only have one attendance profile.` };
             }
           } catch (dupErr) {
-            if (dupErr.status) throw dupErr;
+            // Same fix as identifyAndVerify.js — don't let a raw axios
+            // error (which also carries a `.status` property in newer
+            // axios versions) get mistaken for one of our own throws.
+            if (dupErr.status && !dupErr.isAxiosError) throw dupErr;
             console.error('[Register] Duplicate-face check failed:', dupErr.message);
             throw { status: 503, error: 'Face verification service unavailable. Please try again.' };
           }
