@@ -61,7 +61,14 @@ router.post('/login',
           // document.cookie — the browser attaches it automatically on
           // same-site requests, the dashboard JS never touches it directly.
           res.cookie('radiance_token', token, { ...COOKIE_OPTIONS, maxAge: 7 * 24 * 60 * 60 * 1000 });
-          return res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role, workLocation: user.workLocation } });
+          // Also returned in the body: Safari (and increasingly other
+          // browsers) blocks this cookie outright when the dashboard and
+          // API are on different domains, since it's a third-party cookie
+          // from the browser's perspective no matter what SameSite/Secure
+          // say. The dashboard sends this back as an Authorization header
+          // on every request instead of depending on the cookie arriving —
+          // headers aren't subject to third-party cookie blocking at all.
+          return res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role, workLocation: user.workLocation } });
         }
       }
 

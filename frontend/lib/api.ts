@@ -35,6 +35,27 @@ function clearSessionFlag() {
   document.cookie = `${SESSION_FLAG_COOKIE}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
 }
 
+// The httpOnly cookie the backend also sets is a third-party cookie once the
+// dashboard and API are on different domains (Vercel + Render) — Safari (and
+// Firefox's strict mode) block those outright regardless of SameSite/Secure,
+// which silently breaks auth there while working fine in Chrome. This token
+// is the real credential now: stored here, sent as an Authorization header
+// on every request, which no browser blocks. localStorage (not memory) so
+// the session survives a page reload/new tab, matching the cookie's old job.
+const AUTH_TOKEN_KEY = 'radiance_auth_token';
+
+function setAuthToken(token: string) {
+  localStorage.setItem(AUTH_TOKEN_KEY, token);
+}
+
+function getAuthToken(): string | null {
+  return localStorage.getItem(AUTH_TOKEN_KEY);
+}
+
+function clearAuthToken() {
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(message: string, status: number) {
@@ -44,8 +65,10 @@ export class ApiError extends Error {
 }
 
 async function apiRequest<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  const token = getAuthToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(options.headers as Record<string, string>),
   };
 
@@ -73,6 +96,7 @@ async function apiRequest<T>(endpoint: string, options: RequestInit = {}): Promi
 
 async function logout(): Promise<void> {
   await fetch(`${API_BASE}/api/auth/logout`, { method: 'POST', credentials: 'include' }).catch(() => {});
+  clearAuthToken();
   clearSessionFlag();
   // Force a full reload so proxy.ts re-checks the (now cleared) session
   // flag and redirects to /login.
@@ -82,10 +106,11 @@ async function logout(): Promise<void> {
 export const api = {
   // Auth
   login: async (email: string, password: string) => {
-    const result = await apiRequest<{ user: { id: string; name: string; email: string; role: string } }>('/api/auth/login', {
+    const result = await apiRequest<{ token: string; user: { id: string; name: string; email: string; role: string } }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
+    setAuthToken(result.token);
     setSessionFlag();
     return result;
   },
@@ -185,8 +210,10 @@ export const api = {
     const params = new URLSearchParams();
     if (startDate) params.set('startDate', startDate);
     if (endDate) params.set('endDate', endDate);
+    const token = getAuthToken();
     const res = await fetch(`${API_BASE}/api/v1/attendance/export${params.toString() ? '?' + params.toString() : ''}`, {
       credentials: 'include',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     if (!res.ok) throw new Error('Export failed.');
     const blob = await res.blob();
