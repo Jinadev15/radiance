@@ -907,6 +907,13 @@ def health_check():
         "cosine_threshold": COSINE_MATCH_THRESHOLD,
         "min_match_margin": MIN_MATCH_MARGIN,
         "auth_required": bool(ML_SERVICE_TOKEN),
+        # Anti-spoofing is allowed to fail without taking the service down, so
+        # its absence has to be *visible* — otherwise liveness quietly drops to
+        # the motion check alone and everything still reports "healthy".
+        "antispoofing": {
+            "available": antispoof is not None,
+            "threshold": LIVENESS_SPOOF_THRESHOLD,
+        },
         "embedding_cache": cache,
     }
 

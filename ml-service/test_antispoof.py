@@ -174,3 +174,20 @@ def test_a_completely_static_pair_fails_the_motion_check():
     frame = _image(value=140)
     result = main.analyze_liveness([frame, frame.copy()])
     assert result['is_live'] is False
+
+
+def test_health_reports_whether_antispoofing_is_available():
+    """
+    The model is allowed to fail without taking the service down. That makes
+    its absence invisible unless health says so — liveness would quietly drop
+    to the motion check alone while everything still reported "healthy".
+    """
+    original = main.antispoof
+    try:
+        main.antispoof = None
+        assert main.health_check()['antispoofing']['available'] is False
+        main.antispoof = original
+        if original is not None:
+            assert main.health_check()['antispoofing']['available'] is True
+    finally:
+        main.antispoof = original
