@@ -93,3 +93,76 @@ That creates the one real login you'll actually use. Go to your dashboard URL an
 - [ ] Both UptimeRobot monitors show "Up"
 
 Once all of these pass, the system is genuinely live and ready to hand to your client.
+
+---
+
+## Sizing for Radiance's real scale (126 sites, ~4,000 employees)
+
+The free tiers in the steps above are fine for a pilot at one site. They are
+not sufficient for the full rollout. Measured requirements:
+
+### MongoDB Atlas — M0 is not viable
+
+Attendance documents measure ~660 bytes. At 4,000 employees averaging two
+sessions a day that is ~1.85 GB per year, against M0's 512 MB cap — the
+database fills up somewhere around month three. M0 also has **no backups at
+all**, under data that decides what people get paid.
+
+Use **M10 or above**: continuous backups, dedicated resources, and room to
+grow. This is the single most important upgrade on this page.
+
+### Render — Starter is not sufficient for the ML service
+
+The ML service holds the face-recognition models plus the resident embedding
+cache (~2.7 MB for 4,000 employees — the cache itself is small; the models and
+OpenCV are what need the memory). Starter's 512 MB is too tight once several
+scans are processed concurrently.
+
+- `radiance-backend`: **Starter** is adequate
+- `radiance-ml-service`: **Standard (2 GB)** or above
+
+Both must be on a paid plan regardless, so they stop sleeping — a sleeping
+service means the first employee of the morning waits for a cold start.
+
+### Kiosk device tokens are required at this scale
+
+`KIOSK_DEVICES` is not just a security control here, it is a correctness and
+performance one. A kiosk that identifies its site makes each scan compare
+against that site's roster (~200 people at the largest site) instead of all
+4,000. Fewer candidates means both a faster scan and a materially lower chance
+of a false match.
+
+Generate one token per site:
+
+```bash
+openssl rand -hex 32
+```
+
+Then set on the backend, one entry per kiosk:
+
+```
+KIOSK_DEVICES=<siteId>:<token>,<siteId>:<token>,...
+KIOSK_ENFORCE=true
+```
+
+and on each kiosk's own Vercel project, `VITE_KIOSK_TOKEN` plus
+`VITE_KIOSK_SITE_ID`. Set `KIOSK_ENFORCE=true` only once every kiosk carries
+its token, or you will lock all of them out at once.
+
+### What was measured
+
+At 126 sites / 4,000 employees, before and after the scale work:
+
+| Path | Before | After |
+|---|---|---|
+| Clock-in scan payload | 13.6 MB | 2.5 KB |
+| Backend→ML traffic at 133 scans/min | ~1,813 MB/min | 0.33 MB/min |
+| Dashboard `/stats` queries | ~381 | 3 (flat, regardless of site count) |
+| `approvedOnly` payroll query | 105 KB | 2.1 KB |
+| Employees page reachable | first 200 only | all, paged + server-side search |
+
+The embedding cache lives in the ML service's memory, so it is rebuilt on
+every restart. That is handled automatically: the backend pushes it at boot
+(retrying on a backoff) and any scan that finds a stale version triggers a
+resync. `GET /api/v1/health` reports both `rosterCache` and
+`mlService.embedding_cache` so this is visible rather than assumed.
