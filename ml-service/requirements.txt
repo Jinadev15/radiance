@@ -4,3 +4,6 @@ opencv-contrib-python-headless==4.10.0.84
 numpy==1.26.4
 pydantic==2.7.4
 python-dotenv==1.0.1
+
+# Test-only; not imported by the service at runtime.
+pytest==8.3.3
