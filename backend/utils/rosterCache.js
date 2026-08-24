@@ -123,4 +123,41 @@ function invalidate(reason = 'roster changed') {
   });
 }
 
-module.exports = { sync, invalidate, version, status, computeVersion };
+/**
+ * Sync at boot, retrying on a short backoff.
+ *
+ * The two services deploy at the same time and the backend usually wins by a
+ * few seconds, so a single boot-time attempt reliably fails against an ML
+ * service that hasn't finished starting — observed in production at exactly
+ * 20 seconds apart. Falling back to the 10-minute reconciler would leave the
+ * cache empty for that whole window, making the first employee of the morning
+ * pay for a full roster push. These retries close that gap.
+ */
+async function syncOnBoot(delaysMs = [0, 15000, 45000, 120000]) {
+  for (let attempt = 0; attempt < delaysMs.length; attempt++) {
+    if (delaysMs[attempt] > 0) {
+      await new Promise(resolve => setTimeout(resolve, delaysMs[attempt]));
+    }
+    try {
+      await sync({ force: true });
+      return true;
+    } catch (err) {
+      const last = attempt === delaysMs.length - 1;
+      const message = err.error || err.message;
+      if (last) {
+        console.warn(
+          `[RosterCache] Boot sync still failing after ${delaysMs.length} attempts (${message}). ` +
+          'The next scan, or the 10-minute reconciler, will retry.'
+        );
+        return false;
+      }
+      console.warn(
+        `[RosterCache] Boot sync attempt ${attempt + 1} failed (${message}); ` +
+        `retrying in ${Math.round(delaysMs[attempt + 1] / 1000)}s.`
+      );
+    }
+  }
+  return false;
+}
+
+module.exports = { sync, syncOnBoot, invalidate, version, status, computeVersion };

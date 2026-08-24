@@ -178,12 +178,11 @@ async function connectWithRetry() {
       console.error('[MongoDB]', err.message);
     });
     // Push the roster to the ML service's resident embedding cache as soon as
-    // the database is up. Without this the first scan after a backend restart
-    // pays for a full sync; with it, the common path is already warm.
-    // Failure is non-fatal — a scan that finds a stale cache resyncs itself.
-    rosterCache.sync({ force: true }).catch(e =>
-      console.warn('[RosterCache] Initial sync failed (will retry on first scan):', e.error || e.message)
-    );
+    // the database is up, retrying on a short backoff: both services deploy
+    // together and the backend usually finishes starting first, so a single
+    // attempt tends to hit an ML service that isn't listening yet. Non-fatal
+    // either way — a scan that finds a stale cache resyncs itself.
+    rosterCache.syncOnBoot().catch(() => {});
     // Periodic reconciliation. Every mutation already invalidates the cache
     // explicitly, so this only covers the gaps those can't see: a direct
     // database edit, or a background invalidate that failed while the ML
