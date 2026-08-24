@@ -1135,3 +1135,73 @@ conversation, and no amount of good architecture underneath will save it.
 means no geofence), A9 (throttling blocks real workers), C6 (no origin means
 allowed). Missing configuration currently disables security controls silently.
 Flip the default: when the system doesn't know, it should refuse and say why.
+
+---
+
+# Known gaps (as of the ArcFace switch)
+
+Everything in Parts A–D above is fixed and deployed. This is what is
+genuinely still open, in the order it matters. Hosting/infra is covered
+separately in `DEPLOYMENT.md`.
+
+## Blocking a real rollout
+
+**1. Nobody has scanned a real face yet.**
+Every accuracy figure in this document comes from LFW — public celebrity
+photographs, with dim and blurry conditions *simulated*. Not one actual
+Radiance employee has scanned at an actual kiosk in actual 6 AM light. The
+model comparison is sound (both models got identical inputs), but the
+absolute numbers will move. This is the single biggest unknown and only a
+pilot resolves it.
+
+**2. Kiosk device tokens are still off** (`kiosk.configured: false`).
+The scanner is reachable by anyone who finds the URL, and without a site
+token every scan compares against all 4,000 employees instead of that
+site's ~200 — slower and measurably less accurate. Set `KIOSK_DEVICES` and
+`KIOSK_ENFORCE=true` per `DEPLOYMENT.md`.
+
+**3. Liveness is a heuristic, not a trained model.**
+Texture, glare, and inter-frame motion. It defeats a printed photo. It would
+probably *not* defeat a video of a colleague played on a phone — and
+buddy-punching is the main fraud this system exists to prevent. A passive
+anti-spoofing model (e.g. Silent-Face-Anti-Spoofing) is the real fix. Until
+then, every failure is logged and attributed, which is mitigation, not a
+solution.
+
+**4. No error tracking.**
+Render's logs are ephemeral. A 500 in production currently leaves no trace to
+investigate. Sentry has a working free tier; this is an hour of work and the
+highest-value thing on this list after the pilot.
+
+## Should be done before payroll depends on it
+
+**5. No load test against the deployed service.**
+Throughput was measured per-scan and the capacity figures are arithmetic from
+that, not from firing concurrent requests at production. The 15-minute shift
+change has ~1.8x headroom on paper. Worth proving before trusting.
+
+**6. Retention is a manual endpoint, not a policy.**
+`DELETE /employees/:id/biometrics` exists, but nothing runs on a schedule.
+The DPDP position stated to HR — face data erased 30 days after an employee
+leaves — is currently a promise, not an enforced job.
+
+**7. No privacy notice document.**
+Consent is captured and versioned at the kiosk, but there is no one-page
+notice explaining what is collected, why, who sees it, and how to request
+deletion. HR will ask, and it should exist before the demo.
+
+**8. Restore has never been tested.**
+Once backups are on (M10+), restore one. An untested backup is a rumour.
+
+## Worth doing, not urgent
+
+**9. No frontend tests.** Backend has 86 and the ML service has 5; the
+dashboard has none beyond a type check.
+
+**10. No staging environment.** Every push deploys straight to production.
+A `staging` branch and a second Render/Vercel target would make a bad deploy
+a non-event.
+
+**11. The ML service is single-threaded** for detection and embedding
+(`_engine_lock`). Correct on one CPU, but it is the ceiling if the instance
+ever gets more cores.

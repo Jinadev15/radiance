@@ -1,223 +1,155 @@
-# Attendance Management System Using Face Recognition
+# Radiance — Face Recognition Attendance System
+
+Attendance and payroll-hours tracking for a facility management company:
+employees clock in and out at a site kiosk by face, and HR manages the roster,
+leave, and payroll exports from a dashboard.
+
+Built for ~4,000 employees across ~126 client sites, where the largest single
+site has around 200 people and shifts often start before sunrise.
+
+---
+
+## What it does
+
+**At the site (kiosk):**
+- Clock in / out by face — no cards, no PINs, nothing to lose or share
+- Anti-spoofing: two frames captured ~450 ms apart, checked for the natural
+  movement a held-up printed photo cannot produce
+- Geofenced — a scan is only accepted within the site's radius
+- Self-registration with consent capture, held for HR approval
+- Works offline: scans queue on the device and replay with their *original*
+  capture time when the connection returns
+- Self-service: check your own last 7 days, report a missed scan, request leave
+
+**In the dashboard:**
+- Live attendance, per-site breakdown, and trends
+- Employee roster with an approval queue for kiosk self-registrations
+- Leave requests and a per-site holiday calendar
+- Regularization: an employee reports a missed scan, HR approves, and the
+  attendance record is corrected in the same action
+- Payroll CSV with regular/overtime hours split, break deduction, and half-days
+- Supervisor override for when face scanning genuinely cannot be used
+- Append-only audit log — every correction attributed to a named person
+- Three roles: Admin, HR, and Supervisor (scoped to their own site)
+
+---
+
+## Architecture
+
+| Piece | Stack | Role |
+|---|---|---|
+| `frontend/` | Next.js + TypeScript | HR/Admin/Supervisor dashboard |
+| `scanner/` | React + Vite | Kiosk app employees scan at |
+| `backend/` | Node + Express + Mongoose | All business logic and authorisation |
+| `ml-service/` | Python + FastAPI + ONNX Runtime | Face detection, embedding, liveness |
+| database | MongoDB | Employees, attendance, leave, audit |
+
+### How a clock-in works
 
-An automated attendance management system that leverages facial recognition technology to streamline attendance tracking for educational institutions. This full-stack application allows teachers to manage students and classes, capture facial data, and monitor attendance in real-time through AI-powered face recognition.
+1. Kiosk captures two frames and posts them with GPS and the capture time
+2. Backend asks the ML service for a face embedding
+3. The ML service matches it against its **resident roster cache** — the
+   embeddings live in its memory, so a scan sends only the probe vector
+4. The match must clear a similarity threshold **and** beat the runner-up by a
+   margin, otherwise it is refused rather than guessed
+5. Backend re-checks the matched employee against the database (the database,
+   not the cache, is the authority on who may clock in), enforces the geofence,
+   then opens or closes an attendance session
 
-## Features
+### Face recognition
 
-- **User Authentication**: Secure login system for teachers using JWT tokens
-- **Student Management**: Add, view, and manage student information
-- **Class Management**: Create and organize classes
-- **Face Recognition**: Capture and store facial embeddings for accurate identification
-- **Real-time Attendance Monitoring**: Automated attendance marking using live face recognition
-- **Dashboard Analytics**: View attendance reports and statistics
-- **Responsive UI**: Modern, intuitive interface built with React and Next.js
-- **RESTful API**: Well-structured backend API for all operations
+- **Detection & alignment:** OpenCV YuNet, run on a downscaled copy for speed
+  with coordinates mapped back so embeddings use full-resolution pixels
+- **Recognition:** ArcFace MobileFaceNet (512-d), chosen by benchmarking
+  against SFace over 1,200 real LFW identities including unenrolled "stranger"
+  probes. At a matched ~1% stranger-acceptance rate it identified 91.8% of
+  people in dim light versus SFace's 84.2% — the deciding case, since shifts
+  start before sunrise
+- Every embedding records which model produced it; vectors from different
+  models are never compared, because cross-model similarity is meaningless
 
-## Tech Stack
+---
 
-### Backend
+## Running locally
 
-- **Node.js** - Runtime environment
-- **Express.js** - Web framework
-- **MongoDB** - NoSQL database
-- **Mongoose** - ODM for MongoDB
-- **JWT** - Authentication
-- **bcryptjs** - Password hashing
+**Prerequisites:** Node 18+, Python 3.11+, MongoDB (optional — the backend
+falls back to an in-memory database in development)
 
-### Frontend
+```bash
+# ML service — downloads its models on first boot
+cd ml-service && pip install -r requirements.txt && python main.py
 
-- **Next.js** - React framework
-- **React** - UI library
-- **TypeScript** - Type-safe JavaScript
-- **Tailwind CSS** - Utility-first CSS framework
-- **Radix UI** - Accessible UI components
-- **React Hook Form** - Form handling
-- **Zod** - Schema validation
+# Backend
+cd backend && npm install && cp .env.example .env && npm run dev
 
-### Machine Learning Service
+# Dashboard
+cd frontend && npm install && npm run dev
 
-- **Python** - Programming language
-- **FastAPI** - Modern web framework
-- **DeepFace** - Face recognition library
-- **OpenCV** - Computer vision library
-- **TensorFlow** - Machine learning framework
-- **MTCNN** - Face detection
-- **scikit-learn** - Machine learning algorithms
+# Kiosk
+cd scanner && npm install && npm run dev
+```
 
-## Architecture & How It Works
+Create the first admin login:
 
-The system consists of three main components:
+```bash
+cd backend
+ADMIN_EMAIL="you@example.com" MONGODB_URI="<uri>" node create-admin.js
+```
 
-1. **Frontend (Next.js)**: Provides the user interface for teachers to interact with the system
-2. **Backend (Node.js/Express)**: Handles business logic, database operations, and API endpoints
-3. **ML Service (Python/FastAPI)**: Processes facial recognition tasks
+See `backend/.env.example` for every setting. Three are required in
+production and the server refuses to boot without them: `JWT_SECRET`,
+`MONGODB_URI`, and `NATIONAL_ID_HMAC_SECRET`.
 
-### Workflow:
+---
 
-1. **Setup**: Teachers register/login and create classes/students
-2. **Face Enrollment**: Capture multiple face images of students to generate facial embeddings
-3. **Attendance Monitoring**: Use camera feed to detect and recognize faces in real-time
-4. **Automated Marking**: System automatically marks attendance based on recognized faces
-5. **Reports**: View attendance statistics and generate reports
+## Tests
 
-## Prerequisites
+```bash
+cd backend && npm test          # 86 tests, real MongoDB via memory-server
+cd ml-service && pytest         # detection scaling and coordinate mapping
+cd frontend && npx tsc --noEmit # type check
+```
 
-Before running this application, make sure you have the following installed:
+Backend tests run against a real MongoDB rather than mocks, because the bugs
+that matter here are timezone handling, unique-index behaviour under
+concurrency, and query-count regressions — none of which a mock would catch.
 
-- **Node.js** (v16 or higher)
-- **Python** (v3.8 or higher)
-- **MongoDB** (local installation or cloud instance like MongoDB Atlas)
-- **npm** or **yarn** package manager
-- **pip** Python package manager
+---
 
-## Installation
+## Design decisions worth knowing
 
-1. **Clone the repository:**
+**Everything is computed in a business timezone, never the server's.**
+`utils/tz.js` is the only place dates and times are derived. Hosts run UTC; a
+"09:00" shift compared in server time silently meant 14:30 IST, so nobody was
+marked late until mid-afternoon and every completed night shift was flagged as
+leaving early.
 
-   ```bash
-   git clone <repository-url>
-   cd attendance-management-system-using-face-recognition
-   ```
+**Attendance is stored per session, not per day.** Multiple sessions per day
+are normal — a lunch break, a second shift, or simply tapping the wrong button
+and correcting it.
 
-2. **Backend Setup:**
+**Security controls fail closed.** No site assigned means no clock-in, not an
+unchecked one. A face match too close to call is refused, not guessed. A roster
+cache whose version cannot be confirmed is rebuilt, not trusted.
 
-   ```bash
-   cd backend
-   npm install
-   ```
+**National ID numbers are never stored in full** — only a keyed HMAC (for
+uniqueness) plus the last four digits (for HR to eyeball), with Verhoeff
+checksum validation to catch typos at entry.
 
-3. **Frontend Setup:**
+**`/api/v1/health` reports what each dependency actually believes** — database,
+ML service, roster cache version, SMTP, kiosk auth — rather than just "the
+process is running". It has caught two production bugs that were otherwise
+completely silent.
 
-   ```bash
-   cd ../frontend
-   npm install
-   ```
+---
 
-4. **ML Service Setup:**
-   ```bash
-   cd ../ml-service
-   pip install -r requirements.txt
-   ```
+## Deployment
 
-## Environment Configuration
+See `DEPLOYMENT.md`, including the sizing this scale actually requires — the
+free tiers are fine for a single-site pilot and are **not** sufficient for the
+full rollout.
 
-1. **Backend Environment Variables:**
-   Create a `.env` file in the `backend` directory:
+## Status
 
-   ```
-   PORT=5000
-   MONGODB_URI=mongodb://localhost:27017/attendance-system
-   JWT_SECRET=your-jwt-secret-key
-   ```
-
-2. **Frontend Environment Variables:**
-   Create a `.env.local` file in the `frontend` directory:
-   ```
-   NEXT_PUBLIC_API_URL=http://localhost:5000/api
-   ```
-
-## Running the Application
-
-1. **Start MongoDB:**
-   Make sure MongoDB is running on your system.
-
-2. **Start the ML Service:**
-
-   ```bash
-   cd ml-service
-   python main.py
-   ```
-
-   The service will run on `http://localhost:8000`
-
-3. **Start the Backend:**
-
-   ```bash
-   cd backend
-   npm run dev
-   ```
-
-   The backend will run on `http://localhost:5000`
-
-4. **Start the Frontend:**
-   ```bash
-   cd frontend
-   npm run dev
-   ```
-   The frontend will run on `http://localhost:3000`
-
-## Usage
-
-1. **Access the Application:**
-   Open your browser and navigate to `http://localhost:3000`
-
-2. **Teacher Registration/Login:**
-
-   - Register as a teacher or login with existing credentials
-
-3. **Setup Classes:**
-
-   - Create classes and add students to each class
-
-4. **Student Face Enrollment:**
-
-   - For each student, capture multiple face images to build facial recognition data
-
-5. **Attendance Monitoring:**
-
-   - Start the attendance session for a class
-   - The system will use the camera to detect and recognize student faces
-   - Attendance is automatically marked for recognized students
-
-6. **View Reports:**
-   - Access the dashboard to view attendance statistics and generate reports
-
-## API Endpoints
-
-### Authentication
-
-- `POST /api/auth/login` - Teacher login
-- `POST /api/auth/register` - Teacher registration
-
-### Students
-
-- `GET /api/students` - Get all students
-- `POST /api/students` - Add new student
-- `PUT /api/students/:id` - Update student
-- `DELETE /api/students/:id` - Delete student
-
-### Classes
-
-- `GET /api/classes` - Get all classes
-- `POST /api/classes` - Create new class
-- `PUT /api/classes/:id` - Update class
-- `DELETE /api/classes/:id` - Delete class
-
-### Attendance
-
-- `GET /api/attendance` - Get attendance records
-- `POST /api/attendance` - Mark attendance
-- `GET /api/attendance/reports` - Get attendance reports
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-## License
-
-This project is licensed under the ISC License - see the LICENSE file for details.
-
-## Acknowledgments
-
-- DeepFace library for facial recognition capabilities
-- Radix UI for accessible component primitives
-- Next.js team for the excellent React framework
-- FastAPI for the Python web framework
-
-## Support
-
-For support, email support@example.com or create an issue in the repository.
+Production-deployed. See the "Known gaps" section of `PROJECT-REVIEW.md` for
+what still needs doing before this is the system of record for payroll.
