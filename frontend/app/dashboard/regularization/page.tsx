@@ -125,7 +125,7 @@ export default function RegularizationPage() {
       )}
 
       <p className="text-xs text-text-tertiary">
-        Approving a request doesn't change the attendance record automatically — correct the actual clock-in/out time from the Attendance page after approving.
+        Approving a request with a requested clock-in/out time automatically corrects the attendance record. If the employee didn't give a specific time, use Attendance → Manual Correction after approving.
       </p>
 
       <AlertDialog open={!!rejectTarget} onOpenChange={open => !open && setRejectTarget(null)}>

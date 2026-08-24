@@ -1,11 +1,14 @@
 import os
 import cv2
+import time
 import base64
+import hmac
 import logging
+import threading
 import urllib.request
 import numpy as np
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 from typing import Dict, List, Optional
@@ -20,28 +23,20 @@ logger = logging.getLogger("radiance-ml")
 # Face engine: OpenCV's built-in YuNet (detection) + SFace (recognition).
 # Both ship as ONNX models run through OpenCV's own DNN module — no
 # TensorFlow/PyTorch, no compiled C-extension dependency beyond OpenCV
-# itself (which this service needs regardless, for image decoding). This
-# replaces an earlier DeepFace/TensorFlow pipeline that had a history of
-# failing to load on Windows and silently falling back to a placeholder
-# feature vector with no real recognition accuracy.
+# itself (which this service needs regardless, for image decoding).
 MODEL_DIR = Path(__file__).parent / "models"
 DETECTOR_MODEL = MODEL_DIR / "face_detection_yunet_2023mar.onnx"
 RECOGNIZER_MODEL = MODEL_DIR / "face_recognition_sface_2021dec.onnx"
 
-# These two files are intentionally gitignored (38MB of binary weights
-# don't belong in git history) — which means a fresh deploy on a hosting
-# platform has no way to have them already present unless something fetches
-# them. Rather than requiring every hosting provider to support a custom
-# build-command step (not all free tiers do), the service fetches its own
-# weights from the OpenCV Zoo on first boot if they're missing, so
-# `python main.py` alone is enough to stand the service up anywhere.
 _MODEL_SOURCES = {
     DETECTOR_MODEL: "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
     RECOGNIZER_MODEL: "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
 }
-_MIN_EXPECTED_BYTES = 100_000  # a failed download (e.g. an HTML error page) would be far smaller than either real model
+_MIN_EXPECTED_BYTES = 100_000  # a failed download (e.g. an HTML error page) is far smaller than either real model
+
 
 def _ensure_model(path: Path, url: str) -> None:
+    """Fetch a model file if it isn't already present and complete."""
     if path.exists() and path.stat().st_size >= _MIN_EXPECTED_BYTES:
         return
     logger.info(f"Model file missing or incomplete, downloading: {path.name}")
@@ -50,37 +45,72 @@ def _ensure_model(path: Path, url: str) -> None:
     try:
         urllib.request.urlretrieve(url, tmp_path)
         if tmp_path.stat().st_size < _MIN_EXPECTED_BYTES:
-            raise RuntimeError(f"Downloaded file for {path.name} is suspiciously small ({tmp_path.stat().st_size} bytes) — likely a failed/redirected download, not the real model.")
+            raise RuntimeError(
+                f"Downloaded file for {path.name} is suspiciously small "
+                f"({tmp_path.stat().st_size} bytes) — likely a failed/redirected download."
+            )
         tmp_path.replace(path)
         logger.info(f"Downloaded {path.name} ({path.stat().st_size} bytes)")
     except Exception as e:
         if tmp_path.exists():
             tmp_path.unlink()
         raise RuntimeError(
-            f"Could not download required model file {path.name} from {url}: {e}\n"
-            f"Download it manually instead (see ml-service/README.md) and place it at {path}."
+            f"Could not obtain required model file {path.name} from {url}: {e}\n"
+            f"Commit the file to the repo or place it at {path}."
         )
 
-for _path, _url in _MODEL_SOURCES.items():
-    _ensure_model(_path, _url)
 
-detector = cv2.FaceDetectorYN_create(str(DETECTOR_MODEL), "", (320, 320), score_threshold=0.7)
-recognizer = cv2.FaceRecognizerSF_create(str(RECOGNIZER_MODEL), "")
-logger.info("Face engine ready: YuNet detector + SFace recognizer (pure OpenCV, CPU).")
+# Model loading must NOT be able to kill the process.
+#
+# These two files are ~38MB of weights. Loading them at import time and letting
+# any failure propagate meant a GitHub outage, a rate-limit, or an ephemeral
+# filesystem (which is what a container gets — the disk is wiped on every cold
+# start) took the whole service down at boot: uvicorn never started, so the
+# backend saw connection refused rather than a diagnosable error, and /health
+# could not answer either. Now a failure is captured, /health reports
+# "degraded" with the reason, and the face endpoints return a clear 503.
+detector = None
+recognizer = None
+MODEL_LOAD_ERROR: Optional[str] = None
+# Serialises access to the OpenCV model objects. cv2's DNN objects are not
+# documented as thread-safe, and uvicorn runs sync endpoint handlers in a
+# thread pool — concurrent clock-ins at a shift change genuinely do overlap.
+_engine_lock = threading.Lock()
+
+
+def _load_engine() -> None:
+    global detector, recognizer, MODEL_LOAD_ERROR
+    try:
+        for _path, _url in _MODEL_SOURCES.items():
+            _ensure_model(_path, _url)
+        detector = cv2.FaceDetectorYN_create(str(DETECTOR_MODEL), "", (320, 320), score_threshold=0.7)
+        recognizer = cv2.FaceRecognizerSF_create(str(RECOGNIZER_MODEL), "")
+        MODEL_LOAD_ERROR = None
+        logger.info("Face engine ready: YuNet detector + SFace recognizer (pure OpenCV, CPU).")
+    except Exception as e:
+        MODEL_LOAD_ERROR = str(e)
+        logger.error(f"Face engine FAILED to load — service will report degraded: {e}")
+
+
+_load_engine()
+
+
+def require_engine():
+    """FastAPI dependency: refuse face work with a clear error if models are absent."""
+    if MODEL_LOAD_ERROR is not None or detector is None or recognizer is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Face engine unavailable (models failed to load). Check the ML service logs.",
+        )
+
 
 # App Setup
 app = FastAPI(
     title="Radiance ML Service",
     description="Face recognition and liveness detection for employee attendance",
-    version="3.0.0"
+    version="4.0.0"
 )
 
-# Nothing in this app calls the ML service directly from a browser (the
-# Node backend is the only caller, server-to-server, which CORS doesn't
-# apply to) — so this is defense-in-depth rather than load-bearing, but it
-# was hardcoded to dev-only origins with no way to add a real deployed
-# origin without editing code. EXTRA_CORS_ORIGINS lets that be configured
-# without a redeploy.
 _default_origins = ["http://localhost:5000", "http://localhost:3000", "http://localhost:3001", "http://localhost:5173"]
 _extra_origins = [o.strip() for o in os.getenv("EXTRA_CORS_ORIGINS", "").split(",") if o.strip()]
 
@@ -92,25 +122,60 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Shared-secret authentication.
+#
+# This service is deployed on a public URL and previously accepted requests
+# from anyone who discovered it — meaning an anonymous caller could burn the
+# entire CPU budget on /extract-embedding, and (worse) call /recognize-face
+# with candidate embeddings of their own choosing. Only the Node backend ever
+# calls this service, server-to-server, so a shared secret is the right shape
+# of control. Unset in development so `python main.py` still just works.
+ML_SERVICE_TOKEN = os.getenv("ML_SERVICE_TOKEN", "").strip()
+if not ML_SERVICE_TOKEN:
+    logger.warning(
+        "ML_SERVICE_TOKEN not set — this service will accept requests from anyone "
+        "who can reach it. Set it (and the matching value on the backend) before deploying."
+    )
+
+
+def require_token(x_ml_token: Optional[str] = Header(default=None, alias="X-ML-Token")):
+    if not ML_SERVICE_TOKEN:
+        return
+    # compare_digest, not ==, so a wrong token can't be recovered by timing.
+    if not x_ml_token or not hmac.compare_digest(x_ml_token, ML_SERVICE_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid or missing service token")
+
+
 # Config
-# 0.363 is the OpenCV Zoo's published SFace cosine-similarity match threshold.
-COSINE_MATCH_THRESHOLD = float(os.getenv("COSINE_THRESHOLD", "0.363"))
-# Lowered from an inherited 50.0 — that value was calibrated (if at all) on
-# whole-frame variance, which runs much higher than a tight face-crop's
-# variance. A real webcam face crop routinely lands well under 50; 50.0
-# caused real users to be rejected as "flat/printed" in practice.
+# 0.363 is the OpenCV Zoo's published SFace threshold for 1:1 *verification*
+# ("are these two photos the same person"). Identification against a roster of
+# hundreds is a different and much harder question — every extra enrolled
+# person is another chance for a false match — so the default here is
+# deliberately stricter than the published verification figure.
+COSINE_MATCH_THRESHOLD = float(os.getenv("COSINE_THRESHOLD", "0.45"))
+# The best match must also beat the runner-up by this margin. Without it, a
+# top score of 0.40 against a second-best 0.39 was accepted as certainty when
+# it is really a coin flip between two people — which is how one employee's
+# hours end up credited to another, with no way to explain it afterwards.
+MIN_MATCH_MARGIN = float(os.getenv("MIN_MATCH_MARGIN", "0.06"))
+
 LIVENESS_LAPLACIAN_THRESHOLD = float(os.getenv("LIVENESS_LAPLACIAN_THRESHOLD", "12.0"))
 LIVENESS_GLARE_RATIO = float(os.getenv("LIVENESS_GLARE_RATIO", "0.15"))
 LIVENESS_MIN_MOTION = float(os.getenv("LIVENESS_MIN_MOTION", "2.0"))  # mean abs pixel diff, 0-255 scale
+# Reject a frame too dark to judge instead of failing it as "flat/printed".
+# Facility shifts start before sunrise and run after dark; a dim, grainy frame
+# has low Laplacian variance for reasons that have nothing to do with spoofing,
+# and telling a worker "possible printed photo" when the real problem is the
+# light is both wrong and insulting.
+LIVENESS_MIN_BRIGHTNESS = float(os.getenv("LIVENESS_MIN_BRIGHTNESS", "40.0"))
 MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024  # 10MB limit
-# The byte-size check above only bounds the *compressed* payload — a small,
-# highly-compressible image (e.g. a large solid-color PNG) can still decode
-# into a huge pixel buffer (a few hundred MB+) entirely in-process. No real
-# webcam/phone capture needs a dimension above this; reject anything larger
-# right after decode, before it's used for anything else.
 MAX_IMAGE_DIMENSION = 4096
 
-logger.info(f"ML Service starting — engine=OpenCV(YuNet+SFace), cosine_threshold={COSINE_MATCH_THRESHOLD}")
+logger.info(
+    f"ML Service starting — engine=OpenCV(YuNet+SFace), "
+    f"cosine_threshold={COSINE_MATCH_THRESHOLD}, min_margin={MIN_MATCH_MARGIN}"
+)
+
 
 # Pydantic Models
 class ImagePayload(BaseModel):
@@ -119,18 +184,15 @@ class ImagePayload(BaseModel):
     @field_validator('image')
     @classmethod
     def validate_image_size(cls, v):
-        # Strip data URL prefix if present
         if ',' in v:
             v = v.split(',', 1)[1]
-        # Check approximate size (base64 is ~33% larger than binary)
-        if len(v) > MAX_IMAGE_SIZE_BYTES * 1.37:
+        if len(v) > MAX_IMAGE_SIZE_BYTES * 1.37:  # base64 is ~33% larger than binary
             raise ValueError('Image payload too large (max 10MB)')
         return v
 
+
 class LivenessPayload(BaseModel):
-    # Preferred: 2 frames captured ~0.5s apart, enables the motion check below.
-    # A single frame still works (backward compatible) but only gets the
-    # static texture/glare checks — meaningfully weaker against a still photo.
+    # Preferred: 2 frames captured ~0.5s apart, which enables the motion check.
     images: List[str]
 
     @field_validator('images')
@@ -148,9 +210,18 @@ class LivenessPayload(BaseModel):
             cleaned.append(s)
         return cleaned
 
+
 class RecognizePayload(BaseModel):
     embedding: List[float]
-    candidates: Dict[str, List[float]]
+    # Each candidate may hold SEVERAL embeddings for one person (different
+    # angles and lighting from re-enrolment), matched as best-of. A flat list
+    # is still accepted for backward compatibility.
+    candidates: Dict[str, List]
+    # Optional per-request overrides, so the backend can loosen the margin for
+    # a low-stakes lookup without changing the deployment-wide default.
+    threshold: Optional[float] = None
+    min_margin: Optional[float] = None
+
 
 # Helper: Decode Base64 Image
 def decode_image(image_b64: str) -> np.ndarray:
@@ -163,30 +234,33 @@ def decode_image(image_b64: str) -> np.ndarray:
         img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
         if img is None:
             raise ValueError("Failed to decode image")
+        # The byte-size cap above bounds only the *compressed* payload — a
+        # small, highly-compressible image can still decode into a huge pixel
+        # buffer in-process.
         if img.shape[0] > MAX_IMAGE_DIMENSION or img.shape[1] > MAX_IMAGE_DIMENSION:
             raise ValueError(f"Image dimensions too large (max {MAX_IMAGE_DIMENSION}px per side)")
         return img
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid image data: {str(e)}")
 
-# Helper: Detect the highest-confidence face in an image
+
 def detect_best_face(img: np.ndarray) -> Optional[np.ndarray]:
     """Run YuNet on the image; returns the top-scoring face row (bbox + 5 landmarks + score), or None."""
     h, w = img.shape[:2]
     if h < 10 or w < 10:
         return None
-    detector.setInputSize((w, h))
-    _, faces = detector.detect(img)
+    with _engine_lock:
+        detector.setInputSize((w, h))
+        _, faces = detector.detect(img)
     if faces is None or len(faces) == 0:
         return None
     return max(faces, key=lambda f: f[-1])
 
-# Crop to the detected face's bounding box, with a margin so we keep some
-# surrounding skin/hair (pure edge-to-edge face crops can be unnaturally
-# smooth). Falls back to the full frame if no face was detected — better to
-# be permissive there than to hard-fail on a detection hiccup that isn't
-# what liveness is supposed to be checking anyway.
+
 def crop_to_face(img: np.ndarray, face) -> np.ndarray:
+    """Crop to the detected face with a margin, keeping some surrounding skin/hair."""
     if face is None:
         return img
     h_img, w_img = img.shape[:2]
@@ -199,13 +273,13 @@ def crop_to_face(img: np.ndarray, face) -> np.ndarray:
     region = img[y1:y2, x1:x2]
     return region if region.size > 0 else img
 
-# Helper: texture/glare check on a single (already face-cropped) frame.
-# Measuring the whole frame was the original design here, but a plain wall
-# or blurry background behind a person drags the whole-frame variance down
-# and falsely reads as "flat/printed" even though the actual face is sharp —
-# cropping to the face first is what makes this measurement mean anything.
+
 def analyze_frame(img: np.ndarray) -> dict:
+    """Texture/glare/brightness check on a single (already face-cropped) frame."""
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    mean_brightness = float(np.mean(gray))
+    too_dark = mean_brightness < LIVENESS_MIN_BRIGHTNESS
 
     laplacian_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
     is_live_depth = laplacian_var >= LIVENESS_LAPLACIAN_THRESHOLD
@@ -214,21 +288,29 @@ def analyze_frame(img: np.ndarray) -> dict:
     bright_ratio = float(np.sum(bright_mask > 0) / gray.size)
     is_live_glare = bright_ratio <= LIVENESS_GLARE_RATIO
 
+    # Darkness is reported as its own distinct outcome, never as a spoof: the
+    # fix is a light, and the message has to say so.
+    if too_dark:
+        reason = "Too dark to scan clearly — please move to better light or turn on a light."
+    elif not is_live_depth:
+        reason = "Flat image detected (possible print)"
+    elif not is_live_glare:
+        reason = "Screen glare detected (possible digital screen)"
+    else:
+        reason = None
+
     return {
-        "passed": bool(is_live_depth and is_live_glare),
+        "passed": bool(not too_dark and is_live_depth and is_live_glare),
+        "too_dark": bool(too_dark),
+        "mean_brightness": round(mean_brightness, 2),
         "laplacian_score": round(laplacian_var, 2),
         "bright_pixel_ratio": round(bright_ratio, 4),
-        "reason": None if (is_live_depth and is_live_glare) else (
-            "Flat image detected (possible print)" if not is_live_depth
-            else "Screen glare detected (possible digital screen)"
-        )
+        "reason": reason,
     }
 
-# Helper: motion between two already-cropped face regions — the check that
-# actually needs two frames. A static printed photo held still produces
-# near-zero difference here even though its texture alone might pass
-# analyze_frame; a live face never sits perfectly still.
+
 def face_region_motion(crop_a: np.ndarray, crop_b: np.ndarray) -> Optional[float]:
+    """Mean absolute pixel difference between two face crops — the check that needs two frames."""
     if crop_a.size == 0 or crop_b.size == 0:
         return None
     gray_a = cv2.resize(cv2.cvtColor(crop_a, cv2.COLOR_BGR2GRAY), (96, 96))
@@ -236,17 +318,19 @@ def face_region_motion(crop_a: np.ndarray, crop_b: np.ndarray) -> Optional[float
     diff = cv2.absdiff(gray_a, gray_b)
     return float(np.mean(diff))
 
+
 def analyze_liveness(images: List[np.ndarray]) -> dict:
     """
     Liveness check, single- or multi-frame:
-    1. Laplacian variance + specular glare — per-frame, on the face crop only
-    2. Inter-frame motion in the face region — only runs with 2+ frames; this
-       is what actually distinguishes a live face from a held-up static photo,
-       which the per-frame checks alone cannot.
+    1. Brightness gate — reject "can't tell" rather than guessing "spoof"
+    2. Laplacian variance + specular glare, per frame, on the face crop only
+    3. Inter-frame motion in the face region — needs 2+ frames; this is what
+       actually distinguishes a live face from a held-up static photo
 
-    NOTE: still a heuristic, not certified anti-spoofing. It meaningfully
-    raises the bar past "any single printed photo" — a determined attacker
-    with a video replay or a moving prop can still defeat it.
+    NOTE: still a heuristic, not certified anti-spoofing. It raises the bar
+    well past "any printed photo", but a determined attacker with a video
+    replay can still defeat it — which is why every failure is logged and
+    attributed by the backend.
     """
     faces = [detect_best_face(img) for img in images]
     crops = [crop_to_face(img, face) for img, face in zip(images, faces)]
@@ -254,6 +338,7 @@ def analyze_liveness(images: List[np.ndarray]) -> dict:
     frame_results = [analyze_frame(c) for c in crops]
     frames_pass = all(r["passed"] for r in frame_results)
     failed_reason = next((r["reason"] for r in frame_results if r["reason"]), None)
+    too_dark = any(r["too_dark"] for r in frame_results)
 
     motion_score = None
     motion_pass = True
@@ -271,6 +356,10 @@ def analyze_liveness(images: List[np.ndarray]) -> dict:
 
     return {
         "is_live": is_live,
+        # Lets the backend distinguish "bad conditions, ask them to retry" from
+        # "looks like a spoof, log it" — the two must not be conflated.
+        "too_dark": too_dark,
+        "mean_brightness": frame_results[0]["mean_brightness"],
         "laplacian_score": frame_results[0]["laplacian_score"],
         "bright_pixel_ratio": frame_results[0]["bright_pixel_ratio"],
         "motion_score": round(motion_score, 3) if motion_score is not None else None,
@@ -279,127 +368,263 @@ def analyze_liveness(images: List[np.ndarray]) -> dict:
         "details": details,
     }
 
+
+# ---------------------------------------------------------------------------
+# Vectorised candidate matching
+# ---------------------------------------------------------------------------
+# The previous implementation looped in Python and called recognizer.match()
+# once per candidate. At 500 employees that is 500 OpenCV calls for every
+# single scan; at 2000 it times out. SFace cosine similarity is just a dot
+# product of L2-normalised vectors, so the whole roster can be compared in one
+# NumPy matrix-vector multiply — roughly two orders of magnitude faster, and
+# it yields the runner-up score for free, which is what the margin check needs.
+
+def _normalise_rows(matrix: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    # Guard a zero vector (a corrupt stored embedding) against divide-by-zero;
+    # it scores 0 against everything, which is the correct outcome.
+    norms[norms == 0] = 1.0
+    return matrix / norms
+
+
+def _flatten_candidates(candidates: Dict[str, List], dim: int):
+    """
+    Build a matrix of every stored embedding plus a parallel list of owner ids.
+    Accepts either a flat embedding per candidate or a list of embeddings
+    (multiple enrolment captures for one person).
+    """
+    vectors: List[List[float]] = []
+    owners: List[str] = []
+    skipped = 0
+
+    for emp_id, value in candidates.items():
+        if not value:
+            continue
+        # A list of lists means several embeddings for this person.
+        embeddings = value if isinstance(value[0], (list, tuple)) else [value]
+        for emb in embeddings:
+            if not isinstance(emb, (list, tuple)) or len(emb) != dim:
+                skipped += 1
+                continue
+            vectors.append(list(emb))
+            owners.append(emp_id)
+
+    if not vectors:
+        return None, [], skipped
+    return np.asarray(vectors, dtype=np.float32), owners, skipped
+
+
+def match_embedding(
+    probe: List[float],
+    candidates: Dict[str, List],
+    threshold: float,
+    min_margin: float,
+) -> dict:
+    dim = len(probe)
+    matrix, owners, skipped = _flatten_candidates(candidates, dim)
+    if matrix is None:
+        return {
+            "match": False, "matched_id": None, "confidence": 0.0,
+            "margin": None, "runner_up_id": None, "runner_up_confidence": None,
+            "candidates_compared": 0, "candidates_skipped": skipped,
+            "reason": "no_comparable_candidates",
+        }
+
+    target = np.asarray(probe, dtype=np.float32).reshape(1, -1)
+    scores = (_normalise_rows(matrix) @ _normalise_rows(target).T).ravel()
+
+    # Best score *per person*, not per stored embedding — otherwise someone
+    # with five enrolment captures would occupy both the best and runner-up
+    # slots and defeat the margin check entirely.
+    best_by_owner: Dict[str, float] = {}
+    for owner, score in zip(owners, scores):
+        current = best_by_owner.get(owner)
+        if current is None or score > current:
+            best_by_owner[owner] = float(score)
+
+    ranked = sorted(best_by_owner.items(), key=lambda kv: kv[1], reverse=True)
+    best_id, best_score = ranked[0]
+    runner_up_id, runner_up_score = (ranked[1] if len(ranked) > 1 else (None, None))
+
+    # With only one enrolled person there is no runner-up to compare against,
+    # so the margin is undefined; the threshold alone decides.
+    margin = None if runner_up_score is None else round(best_score - runner_up_score, 4)
+
+    above_threshold = best_score >= threshold
+    margin_ok = margin is None or margin >= min_margin
+    matched = bool(above_threshold and margin_ok)
+
+    if matched:
+        reason = "match"
+    elif not above_threshold:
+        reason = "below_threshold"
+    else:
+        reason = "ambiguous_margin"
+
+    return {
+        "match": matched,
+        "matched_id": best_id if matched else None,
+        "confidence": round(max(0.0, best_score), 4),
+        "margin": margin,
+        "runner_up_id": runner_up_id,
+        "runner_up_confidence": None if runner_up_score is None else round(max(0.0, runner_up_score), 4),
+        "candidates_compared": len(best_by_owner),
+        "candidates_skipped": skipped,
+        "reason": reason,
+    }
+
+
 # Endpoints
 
 @app.get("/health")
 def health_check():
-    """Health check with engine status."""
+    """Health check. Reports degraded (not healthy) when the models failed to load."""
+    ready = MODEL_LOAD_ERROR is None and detector is not None and recognizer is not None
     return {
-        "status": "healthy",
+        "status": "healthy" if ready else "degraded",
         "service": "Radiance ML Service",
         "engine": "OpenCV YuNet + SFace",
+        "models_loaded": ready,
+        "model_error": MODEL_LOAD_ERROR,
         "cosine_threshold": COSINE_MATCH_THRESHOLD,
+        "min_match_margin": MIN_MATCH_MARGIN,
+        "auth_required": bool(ML_SERVICE_TOKEN),
     }
 
 
+@app.post("/reload-models")
+def reload_models(_: None = Depends(require_token)):
+    """Retry a failed model load without redeploying the service."""
+    _load_engine()
+    return {"models_loaded": MODEL_LOAD_ERROR is None, "model_error": MODEL_LOAD_ERROR}
+
+
 @app.post("/liveness-check")
-def liveness_check(payload: LivenessPayload):
+def liveness_check(payload: LivenessPayload, _: None = Depends(require_token), __: None = Depends(require_engine)):
     """
     Anti-spoofing liveness detection. Send 2 frames captured ~0.5s apart for
-    the full check (texture/glare per frame + inter-frame motion); a single
-    frame still works but skips the motion check.
-    Returns: { is_live, laplacian_score, motion_score, frames_checked, details }
+    the full check (brightness + texture/glare per frame, plus inter-frame
+    motion); a single frame still works but skips the motion check.
     """
-    logger.info(f"[/liveness-check] Processing {len(payload.images)} frame(s)")
+    started = time.perf_counter()
     images = [decode_image(img) for img in payload.images]
     result = analyze_liveness(images)
-    logger.info(f"[/liveness-check] Result: is_live={result['is_live']}, laplacian={result['laplacian_score']} (threshold={LIVENESS_LAPLACIAN_THRESHOLD}), motion={result['motion_score']}, details={result['details']}")
+    result["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 1)
+    logger.info(
+        f"[/liveness-check] frames={len(payload.images)} is_live={result['is_live']} "
+        f"brightness={result['mean_brightness']} laplacian={result['laplacian_score']} "
+        f"motion={result['motion_score']} details={result['details']} ({result['elapsed_ms']}ms)"
+    )
     return result
 
 
 @app.post("/extract-embedding")
-def extract_embedding(payload: ImagePayload):
-    """
-    Extract a 128-d SFace embedding from an image.
-    Returns: { embedding: [float, ...], face_detected: bool, dimensions: int }
-    """
-    logger.info("[/extract-embedding] Processing request")
+def extract_embedding(payload: ImagePayload, _: None = Depends(require_token), __: None = Depends(require_engine)):
+    """Extract a 128-d SFace embedding from an image."""
+    started = time.perf_counter()
     img = decode_image(payload.image)
 
     face = detect_best_face(img)
     if face is None:
         raise HTTPException(status_code=422, detail="No face detected. Ensure your face is clearly visible and well-lit.")
 
-    aligned = recognizer.alignCrop(img, face)
-    feature = recognizer.feature(aligned)
+    with _engine_lock:
+        aligned = recognizer.alignCrop(img, face)
+        feature = recognizer.feature(aligned)
     embedding = feature.flatten().tolist()
 
-    logger.info(f"[/extract-embedding] Extracted {len(embedding)}-d SFace embedding")
-    return {"embedding": embedding, "face_detected": True, "dimensions": len(embedding)}
-
-
-@app.post("/recognize-face")
-def recognize_face(payload: RecognizePayload):
-    """
-    Match a face embedding against a dictionary of candidates using SFace cosine similarity.
-    Returns: { match: bool, matched_id: str | None, confidence: float }
-
-    Confidence is the raw cosine similarity score (higher = more similar).
-    Match threshold follows the OpenCV Zoo's published SFace value (0.363).
-    """
-    logger.info(f"[/recognize-face] Comparing against {len(payload.candidates)} candidates")
-
-    if not payload.candidates:
-        return {"match": False, "matched_id": None, "confidence": 0.0}
-
-    target = np.array(payload.embedding, dtype=np.float32).reshape(1, -1)
-    best_id = None
-    best_score = -1.0
-
-    for emp_id, embedding in payload.candidates.items():
-        candidate = np.array(embedding, dtype=np.float32).reshape(1, -1)
-        if target.shape[1] != candidate.shape[1]:
-            logger.warning(f"Dimension mismatch for candidate {emp_id}: {target.shape[1]} vs {candidate.shape[1]}")
-            continue
-        try:
-            score = float(recognizer.match(target, candidate, cv2.FaceRecognizerSF_FR_COSINE))
-        except Exception as e:
-            logger.warning(f"Error comparing candidate {emp_id}: {e}")
-            continue
-        if score > best_score:
-            best_score = score
-            best_id = emp_id
-
-    matched = bool(best_score >= COSINE_MATCH_THRESHOLD)
-
-    logger.info(f"[/recognize-face] Best match: id={best_id}, score={best_score:.4f}, matched={matched}")
+    elapsed = round((time.perf_counter() - started) * 1000, 1)
+    logger.info(f"[/extract-embedding] {len(embedding)}-d SFace embedding ({elapsed}ms)")
     return {
-        "match": matched,
-        "matched_id": best_id if matched else None,
-        "confidence": round(max(0.0, best_score), 4)
+        "embedding": embedding,
+        "face_detected": True,
+        "dimensions": len(embedding),
+        "elapsed_ms": elapsed,
     }
 
 
+@app.post("/recognize-face")
+def recognize_face(payload: RecognizePayload, _: None = Depends(require_token), __: None = Depends(require_engine)):
+    """
+    Match a face embedding against candidates using vectorised cosine similarity.
+
+    Returns match/matched_id/confidence plus `margin` (the gap to the runner-up)
+    and `reason`. A best score that clears the threshold but sits too close to
+    the second-best is rejected as `ambiguous_margin` rather than reported as a
+    confident match.
+    """
+    started = time.perf_counter()
+
+    if not payload.candidates:
+        return {
+            "match": False, "matched_id": None, "confidence": 0.0, "margin": None,
+            "runner_up_id": None, "runner_up_confidence": None,
+            "candidates_compared": 0, "candidates_skipped": 0,
+            "reason": "no_candidates", "elapsed_ms": 0.0,
+        }
+
+    threshold = payload.threshold if payload.threshold is not None else COSINE_MATCH_THRESHOLD
+    min_margin = payload.min_margin if payload.min_margin is not None else MIN_MATCH_MARGIN
+
+    result = match_embedding(payload.embedding, payload.candidates, threshold, min_margin)
+    result["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 1)
+
+    logger.info(
+        f"[/recognize-face] people={result['candidates_compared']} "
+        f"best={result['confidence']} margin={result['margin']} "
+        f"reason={result['reason']} ({result['elapsed_ms']}ms)"
+    )
+    return result
+
+
 @app.post("/verify-faces")
-def verify_faces(payload: dict):
+def verify_faces(payload: dict, _: None = Depends(require_token), __: None = Depends(require_engine)):
     """
-    1:1 face verification between two base64 images.
-    Returns: { verified: bool, confidence: float }
+    1:1 face verification between two base64 images. Used by the
+    employee-code + face flow, where the identity is asserted up front and
+    only has to be confirmed — a far easier and more accurate question than
+    identifying one face among hundreds.
     """
-    try:
-        image1 = payload.get('image1')
-        image2 = payload.get('image2')
-        if not image1 or not image2:
-            raise HTTPException(status_code=400, detail="Both image1 and image2 are required")
+    image1 = payload.get('image1')
+    image2 = payload.get('image2')
+    if not image1 or not image2:
+        raise HTTPException(status_code=400, detail="Both image1 and image2 are required")
 
-        img1 = decode_image(image1)
-        img2 = decode_image(image2)
+    img1 = decode_image(image1)
+    img2 = decode_image(image2)
 
-        face1 = detect_best_face(img1)
-        face2 = detect_best_face(img2)
-        if face1 is None or face2 is None:
-            raise HTTPException(status_code=422, detail="No face detected in one or both images.")
+    face1 = detect_best_face(img1)
+    face2 = detect_best_face(img2)
+    if face1 is None or face2 is None:
+        raise HTTPException(status_code=422, detail="No face detected in one or both images.")
 
+    with _engine_lock:
         feat1 = recognizer.feature(recognizer.alignCrop(img1, face1))
         feat2 = recognizer.feature(recognizer.alignCrop(img2, face2))
-        score = recognizer.match(feat1, feat2, cv2.FaceRecognizerSF_FR_COSINE)
+        score = float(recognizer.match(feat1, feat2, cv2.FaceRecognizerSF_FR_COSINE))
 
-        return {"verified": bool(score >= COSINE_MATCH_THRESHOLD), "confidence": round(float(score), 4)}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"[/verify-faces] Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"verified": bool(score >= COSINE_MATCH_THRESHOLD), "confidence": round(score, 4)}
+
+
+@app.post("/compare-embedding")
+def compare_embedding(payload: dict, _: None = Depends(require_token)):
+    """
+    1:1 comparison of a probe embedding against one person's stored
+    embeddings. No image decoding and no model call — pure vector maths — so
+    it stays fast even on a cold instance.
+    """
+    probe = payload.get("embedding")
+    stored = payload.get("embeddings")
+    if not probe or not stored:
+        raise HTTPException(status_code=400, detail="Both 'embedding' and 'embeddings' are required")
+
+    result = match_embedding(
+        probe,
+        {"target": stored},
+        float(payload.get("threshold", COSINE_MATCH_THRESHOLD)),
+        0.0,  # a 1:1 comparison has no runner-up, so no margin applies
+    )
+    return {"verified": result["match"], "confidence": result["confidence"]}
 
 
 if __name__ == "__main__":

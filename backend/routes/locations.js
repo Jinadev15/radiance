@@ -4,6 +4,27 @@ const { body, param, validationResult } = require('express-validator');
 const WorkLocation = require('../models/WorkLocation');
 const auth = require('../middleware/auth');
 const { requireAdminOrHr } = auth;
+const { requireKioskDevice } = require('../middleware/kiosk');
+
+// GET /api/v1/locations/public — minimal site list for the kiosk's own
+// registration form (name + id only, no coordinates or radius).
+//
+// The kiosk has no dashboard login, so it can't call the authenticated GET /
+// below — and it needs a real site list, because self-registration requiring
+// a site (see routes/register.js) is what closes the hole where every
+// self-registered employee had no geofence and no late detection at all.
+// Gated by the same kiosk-device check as the scanning endpoints rather than
+// left fully open, even though a list of site names is low-sensitivity.
+router.get('/public', requireKioskDevice, async (req, res) => {
+  try {
+    const filter = { isActive: true };
+    if (req.kioskSiteId) filter._id = req.kioskSiteId; // a bound kiosk only offers its own site
+    const locations = await WorkLocation.find(filter).select('name').sort({ name: 1 });
+    res.json(locations);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch sites' });
+  }
+});
 
 // GET /api/v1/locations — All active locations, or just a supervisor's own site
 router.get('/', auth, async (req, res) => {

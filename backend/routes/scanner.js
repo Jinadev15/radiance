@@ -1,102 +1,132 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
-const AttendanceLog = require('../models/AttendanceLog');
-const { isWithinGeofence } = require('../utils/geofence');
-const { computeClockInStatus } = require('../utils/shiftStatus');
+const { body, validationResult } = require('express-validator');
 const { identifyAndVerify } = require('../utils/identifyAndVerify');
+const engine = require('../utils/attendanceEngine');
+const { businessTime, businessDate, DEFAULT_TZ } = require('../utils/tz');
+const { requireKioskDevice } = require('../middleware/kiosk');
 
 // POST /api/v1/clock-in — Employee clock in
-router.post('/', async (req, res) => {
-  try {
-    const { images, image, latitude, longitude } = req.body;
-    // Accept a single legacy `image` too, normalized to the frames array.
-    const frames = images || (image ? [image] : []);
-    if (frames.length === 0) return res.status(400).json({ error: 'Face image is required' });
+router.post('/',
+  requireKioskDevice,
+  [
+    body('capturedAt').optional({ nullable: true }).isISO8601()
+      .withMessage('capturedAt must be an ISO 8601 timestamp'),
+    body('latitude').optional({ nullable: true }).isFloat({ min: -90, max: 90 }),
+    body('longitude').optional({ nullable: true }).isFloat({ min: -180, max: 180 }),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ error: errors.array()[0].msg });
 
-    if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({ error: 'Database unavailable' });
-    }
-
-    let matchedEmployee, confidence;
     try {
-      ({ matchedEmployee, confidence } = await identifyAndVerify(frames, 'CLOCK_IN'));
-    } catch (err) {
-      return res.status(err.status || 500).json({ error: err.error || 'Internal server error' });
-    }
+      const { images, image, latitude, longitude, capturedAt } = req.body;
+      // Accept a single legacy `image` too, normalised to the frames array.
+      const frames = Array.isArray(images) ? images : (image ? [image] : []);
+      if (frames.length === 0) return res.status(400).json({ error: 'Face image is required' });
 
-    const today = new Date().toISOString().split('T')[0];
-    const now = new Date();
-
-    // Look for an already-open shift within the last 20 hours, not just "today's"
-    // date string — a night shift that started yesterday evening is still the
-    // same ongoing shift after midnight, and shouldn't create a second log.
-    const lookback = new Date(now.getTime() - 20 * 60 * 60 * 1000);
-    let existingLog = await AttendanceLog.findOne({
-      employee: matchedEmployee._id,
-      clockInTime: { $gte: lookback },
-      clockOutTime: { $exists: false }
-    }).sort({ clockInTime: -1 });
-    let isRepeat = false;
-    let status = 'VALID';
-
-    if (!existingLog) {
-      // Geofence check — hard block, only if the employee is assigned to a site.
-      // Matches Truein's behavior: an out-of-radius attempt simply isn't permitted,
-      // it doesn't get logged as a fudged "present" record.
-      if (matchedEmployee.workLocation) {
-        const lat = latitude !== undefined && latitude !== null ? parseFloat(latitude) : null;
-        const lon = longitude !== undefined && longitude !== null ? parseFloat(longitude) : null;
-        if (lat === null || lon === null || Number.isNaN(lat) || Number.isNaN(lon)) {
-          return res.status(403).json({ error: 'Location access is required to clock in. Please enable location and try again.' });
-        }
-        const geo = isWithinGeofence(lat, lon, matchedEmployee.workLocation);
-        if (!geo.within) {
-          return res.status(403).json({
-            error: `You're ${geo.distanceMeters}m from ${matchedEmployee.workLocation.name}. Move within ${matchedEmployee.workLocation.radiusMeters}m of the site to clock in.`
-          });
-        }
+      if (mongoose.connection.readyState !== 1) {
+        return res.status(503).json({ error: 'Database unavailable' });
       }
 
-      status = computeClockInStatus(now, matchedEmployee.shiftTemplate);
+      const timeZone = DEFAULT_TZ;
+      // `at` is when the scan actually happened, which for a replayed offline
+      // scan is not now. Validated inside the engine.
+      const { at, source } = engine.resolveCaptureTime(capturedAt);
 
-      const newLog = new AttendanceLog({
-        employee: matchedEmployee._id,
-        date: today,
-        clockInTime: now,
-        clockInLatitude: parseFloat(latitude || 0),
-        clockInLongitude: parseFloat(longitude || 0),
-        status,
+      const { matchedEmployee, confidence, margin, livenessScore } = await identifyAndVerify(
+        frames,
+        'CLOCK_IN',
+        { workLocationId: req.kioskSiteId || null }
+      );
+
+      // Already clocked in? Report the existing session rather than opening a
+      // second one — including across midnight for a night shift.
+      const openSession = await engine.findOpenSession(matchedEmployee._id, at);
+      if (openSession) {
+        return res.status(200).json({
+          success: true,
+          alreadyClockedIn: true,
+          employeeName: matchedEmployee.name,
+          employeeId: matchedEmployee.employeeId,
+          sessionNumber: openSession.sessionNumber,
+          timestamp: openSession.clockInTime,
+          status: openSession.status,
+          confidence,
+          message: `Welcome back ${matchedEmployee.name}! You're already clocked in since ` +
+                   `${businessTime(openSession.clockInTime, timeZone)}.`,
+        });
+      }
+
+      // A brand-new session, so the geofence applies. Fails closed when the
+      // employee has no site assigned.
+      const latest = await engine.findLatestSession(matchedEmployee._id, at);
+      engine.assertNotDoubleTap(latest, at);
+
+      const geo = engine.enforceGeofence(matchedEmployee, latitude, longitude, 'clock in');
+
+      const log = await engine.openSession({
+        employee: matchedEmployee,
+        at,
+        geo,
         confidence,
-        markedBy: 'AUTO',
-        siteName: matchedEmployee.workLocation?.name || null,
-        service: matchedEmployee.serviceTag?.name || null,
+        margin,
+        livenessScore,
+        source,
+        timeZone,
+        notes: source === 'OFFLINE_SYNC'
+          ? 'Recorded from an offline scan queued on the kiosk.'
+          : null,
       });
-      await newLog.save();
-    } else {
-      isRepeat = true;
-      status = existingLog.status;
+
+      const timeStr = businessTime(log.clockInTime, timeZone);
+      const lateNote = log.status === 'LATE' ? ' You are marked late today.' : '';
+      const sessionNote = log.sessionNumber > 1 ? ` (session ${log.sessionNumber} today)` : '';
+      const queuedNote = source === 'OFFLINE_SYNC'
+        ? ` Recorded at your original scan time of ${timeStr}.`
+        : '';
+
+      return res.status(200).json({
+        success: true,
+        alreadyClockedIn: false,
+        employeeName: matchedEmployee.name,
+        employeeId: matchedEmployee.employeeId,
+        sessionNumber: log.sessionNumber,
+        date: log.date,
+        timestamp: log.clockInTime,
+        status: log.status,
+        confidence,
+        matchMargin: margin,
+        distanceMeters: geo.distanceMeters,
+        message: `Welcome ${matchedEmployee.name}! Clocked in at ${timeStr}${sessionNote}.${lateNote}${queuedNote}`,
+      });
+
+    } catch (error) {
+      // Errors raised by the ML client, the identify pipeline and the
+      // attendance engine all carry { status, error } so they can be
+      // returned directly — anything else is genuinely unexpected.
+      if (error && error.isServiceError) {
+        return res.status(error.status).json({ error: error.error, code: error.code });
+      }
+      console.error('[Scanner/ClockIn]', error.message);
+      return res.status(500).json({ error: 'Internal server error' });
     }
-
-    const timeStr = (isRepeat ? existingLog.clockInTime : now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const lateNote = status === 'LATE' ? ' You are marked late today.' : '';
-
-    return res.status(200).json({
-      success: true,
-      employeeName: matchedEmployee.name,
-      employeeId: matchedEmployee.employeeId,
-      timestamp: isRepeat ? existingLog.clockInTime : now,
-      status,
-      confidence,
-      message: isRepeat
-        ? `Welcome back ${matchedEmployee.name}! You already clocked in today at ${timeStr}.`
-        : `Welcome ${matchedEmployee.name}! Clock-in successful.${lateNote}`
-    });
-
-  } catch (error) {
-    console.error('[Scanner/ClockIn]', error.message);
-    return res.status(500).json({ error: 'Internal server error' });
   }
+);
+
+// GET /api/v1/clock-in/today — kiosk-side sanity check that the backend and
+// the tablet agree on what day it is. A device with a wrong clock is a real
+// failure mode for the offline queue, and this makes it visible on the kiosk
+// instead of surfacing later as mis-dated attendance.
+router.get('/today', requireKioskDevice, (req, res) => {
+  const now = new Date();
+  res.json({
+    businessDate: businessDate(now, DEFAULT_TZ),
+    businessTime: businessTime(now, DEFAULT_TZ),
+    timezone: DEFAULT_TZ,
+    serverTime: now.toISOString(),
+  });
 });
 
 module.exports = router;

@@ -72,7 +72,7 @@ router.delete('/:id', auth, requireAdminOrHr,
     try {
       const shift = await ShiftTemplate.findByIdAndUpdate(req.params.id, { isActive: false }, { new: true });
       if (!shift) return res.status(404).json({ error: 'Shift template not found' });
-      const stillAssigned = await Employee.countDocuments({ shiftTemplate: req.params.id, isActive: true });
+      const stillAssigned = await Employee.countDocuments({ shiftTemplate: req.params.id, status: Employee.STATUS.ACTIVE });
       res.json({ success: true, message: 'Shift template deactivated.', stillAssignedCount: stillAssigned });
     } catch (error) {
       res.status(500).json({ error: 'Failed to deactivate shift template' });
@@ -97,7 +97,7 @@ router.post('/bulk-assign', auth, requireAdminOrHr,
         return res.status(400).json({ error: 'Provide either employeeIds or a workLocation to assign to.' });
       }
 
-      const filter = { isActive: true };
+      const filter = { status: Employee.STATUS.ACTIVE };
       if (employeeIds?.length) filter._id = { $in: employeeIds };
       if (workLocation) filter.workLocation = workLocation;
 

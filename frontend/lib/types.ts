@@ -43,6 +43,8 @@ export interface Contractor {
   isActive?: boolean;
 }
 
+export type EmployeeStatus = 'ACTIVE' | 'PENDING_APPROVAL' | 'INACTIVE' | 'REJECTED';
+
 export interface Employee {
   _id: string;
   employeeId: string;
@@ -54,7 +56,12 @@ export interface Employee {
   workLocation: { _id: string; name: string; address?: string } | null;
   serviceTag?: { _id: string; name: string } | null;
   contractor?: { _id: string; name: string } | null;
+  // `isActive` is derived server-side (status === 'ACTIVE') and kept for
+  // existing pages; `status` carries the fuller PENDING/REJECTED lifecycle.
   isActive: boolean;
+  status?: EmployeeStatus;
+  hasBiometrics?: boolean;
+  weeklyOff?: number[];
   createdAt: string;
 }
 
@@ -71,16 +78,21 @@ export type AttendanceStatus = 'VALID' | 'LATE' | 'EARLY_DEPARTURE' | 'LOCATION_
 
 export interface AttendanceLog {
   _id: string;
-  employee: { _id: string; name: string; employeeId: string; phone?: string; workLocation?: string } | null;
+  employee: { _id: string; name: string; employeeId: string; phone?: string; workLocation?: string; status?: EmployeeStatus } | null;
   date: string;
+  sessionNumber?: number;
   siteName: string | null;
   service?: string | null;
   clockInTime: string;
   clockOutTime?: string;
   totalHours?: number;
+  regularHours?: number;
+  overtimeHours?: number;
+  isHalfDay?: boolean;
   status: AttendanceStatus;
   confidence?: number;
-  markedBy?: 'AUTO' | 'MANUAL';
+  matchMargin?: number | null;
+  markedBy?: 'AUTO' | 'MANUAL' | 'OFFLINE_SYNC' | 'SUPERVISOR_OVERRIDE' | 'AUTO_CLOSED';
   notes?: string;
 }
 
@@ -108,6 +120,49 @@ export interface RegularizationRequest {
   createdAt: string;
 }
 
+export type LeaveType = 'CASUAL' | 'SICK' | 'UNPAID' | 'COMP_OFF' | 'MATERNITY' | 'OTHER';
+
+export interface LeaveRequest {
+  _id: string;
+  employee: { _id: string; name: string; employeeId: string; workLocation?: string } | null;
+  leaveType: LeaveType;
+  fromDate: string;
+  toDate: string;
+  isHalfDay: boolean;
+  reason: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED';
+  reviewedBy?: { name: string } | null;
+  reviewNote?: string | null;
+  reviewedAt?: string | null;
+  source: 'KIOSK' | 'DASHBOARD';
+  createdAt: string;
+}
+
+export interface Holiday {
+  _id: string;
+  date: string;
+  name: string;
+  workLocations: { _id: string; name: string }[];
+  isPaid: boolean;
+  createdAt: string;
+}
+
+export interface AuditEntry {
+  _id: string;
+  actor: string | null;
+  actorName: string | null;
+  actorEmail: string | null;
+  actorRole: string | null;
+  action: string;
+  targetModel: string | null;
+  targetId: string | null;
+  targetLabel: string | null;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  reason: string | null;
+  createdAt: string;
+}
+
 export interface SiteStat {
   siteId: string | null;
   siteName: string;
@@ -118,10 +173,19 @@ export interface SiteStat {
 
 export interface DashboardStats {
   totalEmployees: number;
+  // Employees actually expected today — total minus on-leave, weekly-off and
+  // holiday. This is the correct denominator for an attendance percentage;
+  // totalEmployees is not.
+  expected?: number;
   presentToday: number;
   absent: number;
   onTime: number;
   late: number;
+  onLeave?: number;
+  weeklyOff?: number;
+  holiday?: number;
+  stillClockedIn?: number;
+  attendanceRate?: number | null;
   bySite?: SiteStat[];
 }
 

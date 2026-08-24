@@ -84,6 +84,11 @@ export function DashboardLiveFeed() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                {log.employee?.status === 'PENDING_APPROVAL' && (
+                  <span className="badge-warning inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium" title="Recorded normally — this employee just hasn't been approved by HR yet">
+                    Pending Approval
+                  </span>
+                )}
                 <span className="badge-verify inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium">
                   <ShieldCheck size={11} />
                   Liveness Verified

@@ -1,6 +1,24 @@
-import { enqueue, isNetworkError } from './offlineQueue';
+import { enqueue, isNetworkError, queueLength } from './offlineQueue';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+
+// Identifies this device to the backend (see backend/middleware/kiosk.js).
+// Set per-deployment via the scanner's build env — VITE_KIOSK_TOKEN is the
+// device's shared secret, VITE_KIOSK_SITE_ID is which site it belongs to
+// (used to scope face-matching candidates and, once set, to pre-fill/lock
+// the site on this kiosk's own registration form).
+function kioskHeaders() {
+  const headers = { 'Content-Type': 'application/json' };
+  const token = import.meta.env.VITE_KIOSK_TOKEN;
+  const site = import.meta.env.VITE_KIOSK_SITE_ID;
+  if (token) headers['X-Kiosk-Token'] = token;
+  if (site) headers['X-Kiosk-Site'] = site;
+  return headers;
+}
+
+export function kioskSiteId() {
+  return import.meta.env.VITE_KIOSK_SITE_ID || null;
+}
 
 // Note on the offline path: queuing stores the raw scan and replays it once
 // connectivity returns — actual face match / liveness / geofence verification
@@ -8,19 +26,30 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 // "saved, pending verification," not a confirmed clock-in — the UI says so
 // rather than claiming success we can't actually know yet.
 async function postWithOfflineFallback(endpoint, body, offlineMessage) {
+  // Stamped here, at the moment of the actual scan — not when a later sync
+  // eventually happens. Sent on every request (not just queued ones) so a
+  // slow-but-successful live request is timestamped just as precisely.
+  const withCapture = { ...body, capturedAt: new Date().toISOString() };
+
   try {
     const response = await fetch(`${API_URL}${endpoint}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      headers: kioskHeaders(),
+      body: JSON.stringify(withCapture),
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || data.msg || data.message || 'Request failed');
     return data;
   } catch (err) {
     if (isNetworkError(err)) {
-      enqueue(endpoint, body);
-      return { success: true, queued: true, message: offlineMessage };
+      const result = await enqueue(endpoint, withCapture);
+      if (!result.ok) {
+        // Never let a storage failure look like a successful clock-in — the
+        // employee needs to know to find their supervisor instead of
+        // walking away believing they're recorded.
+        throw new Error('Could not save your scan for later. Please tell your supervisor.');
+      }
+      return { success: true, queued: true, message: offlineMessage, pendingCount: await queueLength() };
     }
     throw err;
   }
@@ -47,17 +76,27 @@ export async function clockOut(images, latitude, longitude) {
 // Registration is NOT queued offline — it needs a live duplicate-face check
 // against the server, so it fails clearly and asks the employee to retry
 // once connectivity is back, rather than silently enrolling unverified.
-// `images` is the same 2-frame capture used for clock-in/out — passing
-// both (not just the first) lets the backend run a real liveness check on
-// enrollment too, not just on later clock-ins.
+// `images` is the same 2-frame capture used for clock-in/out — passing both
+// (not just the first) lets the backend run a real liveness check on
+// enrolment too, not just on later clock-ins.
 export async function registerEmployee(name, phone, nationalId, dateOfBirth, images, extra = {}) {
   const response = await fetch(`${API_URL}/v1/register`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, phone, nationalId, dateOfBirth, images, ...extra })
+    headers: kioskHeaders(),
+    body: JSON.stringify({ name, phone, nationalId, dateOfBirth, images, ...extra }),
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || data.msg || data.message || 'Registration failed');
+  return data;
+}
+
+// Active sites for the registration form's site picker. Public-but-gated
+// endpoint (see backend/routes/locations.js /public) — the kiosk has no
+// dashboard login, so it can't use the authenticated GET /locations.
+export async function fetchSites() {
+  const response = await fetch(`${API_URL}/v1/locations/public`, { headers: kioskHeaders() });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'Could not load site list');
   return data;
 }
 
@@ -65,8 +104,8 @@ export async function registerEmployee(name, phone, nationalId, dateOfBirth, ima
 export async function fetchMyAttendance(images) {
   const response = await fetch(`${API_URL}/v1/my-attendance`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ images })
+    headers: kioskHeaders(),
+    body: JSON.stringify({ images }),
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || data.msg || 'Could not look up your attendance');
@@ -76,10 +115,12 @@ export async function fetchMyAttendance(images) {
 export async function reportIssue(images, date, reason) {
   const response = await fetch(`${API_URL}/v1/regularization`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ images, date, reason })
+    headers: kioskHeaders(),
+    body: JSON.stringify({ images, date, reason }),
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || data.msg || 'Could not submit your report');
   return data;
 }
+
+export { queueLength };

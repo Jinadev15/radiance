@@ -81,15 +81,18 @@ export default function RegisterEmployeePage() {
                         <label htmlFor="reg-site" className="text-sm font-medium text-text-secondary flex items-center gap-1.5"><MapPin size={13} /> Assigned Site</label>
                         <select
                             id="reg-site"
+                            required
                             value={formData.workLocation}
                             onChange={e => setFormData({...formData, workLocation: e.target.value})}
                             className="input-base w-full mt-1 p-3"
                         >
-                            <option value="">Unassigned — assign later from Employees</option>
+                            <option value="" disabled>Select a site…</option>
                             {sites.map(s => <option key={s._id} value={s._id}>{s.name}</option>)}
                         </select>
-                        {sites.length === 0 && (
-                            <p className="text-xs text-text-tertiary mt-1">No sites created yet — add one under Sites to enable geofenced clock-ins.</p>
+                        {sites.length === 0 ? (
+                            <p className="text-xs text-text-tertiary mt-1">No sites created yet — add one under Sites first. A site is required: without one this employee has no location check and can never be marked late.</p>
+                        ) : (
+                            <p className="text-xs text-text-tertiary mt-1">Required — an employee with no site skips the geofence and late-detection checks entirely.</p>
                         )}
                     </div>
 

@@ -8,7 +8,7 @@ import ProcessingScreen from './components/ProcessingScreen';
 import ResultScreen from './components/ResultScreen';
 import MyAttendanceScreen from './components/MyAttendanceScreen';
 import { clockIn, clockOut, registerEmployee, fetchMyAttendance, reportIssue } from './utils/api';
-import { startAutoSync } from './utils/offlineQueue';
+import { startAutoSync, queueLength } from './utils/offlineQueue';
 
 const STATES = {
   LANDING: 'LANDING',
@@ -31,11 +31,16 @@ function App() {
 
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+  const [pendingScans, setPendingScans] = useState(0);
 
-  // Retries any queued offline scans in the background for the lifetime of the app.
+  // Retries any queued offline scans in the background for the lifetime of
+  // the app, and keeps a visible count so a site whose Wi-Fi has dropped
+  // shows that on screen rather than looking like a working, silent kiosk.
   useEffect(() => {
     const intervalId = startAutoSync();
-    return () => clearInterval(intervalId);
+    const pollId = setInterval(() => { queueLength().then(setPendingScans); }, 5000);
+    queueLength().then(setPendingScans);
+    return () => { clearInterval(intervalId); clearInterval(pollId); };
   }, []);
 
   // Transition handlers
@@ -86,7 +91,7 @@ function App() {
           registrationData.aadhaar,
           registrationData.dob,
           images,
-          { consent: registrationData.consent }
+          { consent: registrationData.consent, workLocation: registrationData.workLocation }
         );
       } else if (isMyAttendance) {
         resData = await fetchMyAttendance(images);
@@ -127,6 +132,15 @@ function App() {
 
   return (
     <div className="app-container">
+      {pendingScans > 0 && (
+        <div
+          className="status-banner status-banner--warning"
+          style={{ position: 'fixed', top: '0.75rem', left: '50%', transform: 'translateX(-50%)', zIndex: 50 }}
+          role="status"
+        >
+          {pendingScans} scan{pendingScans === 1 ? '' : 's'} waiting to sync — no connection yet
+        </div>
+      )}
       {currentScreen === STATES.LANDING && (
         <LandingScreen
           onExistingUser={handleExistingUser}

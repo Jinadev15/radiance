@@ -1,135 +1,171 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
+const { query, validationResult } = require('express-validator');
 const Employee = require('../models/Employee');
 const AttendanceLog = require('../models/AttendanceLog');
 const WorkLocation = require('../models/WorkLocation');
 const auth = require('../middleware/auth');
+const { resolveDay } = require('../utils/roster');
+const { businessDate, recentBusinessDates, DEFAULT_TZ } = require('../utils/tz');
 
 // GET /api/v1/dashboard/stats
 // GET /api/v1/dashboard/stats?workLocation=<id>  — scoped to one site
+//
+// Rebuilt on utils/roster.js. Previously `absent = totalEmployees -
+// presentToday` conflated four different things: genuinely absent, on
+// approved leave, on a weekly off, and a public holiday — so every Sunday
+// reported the whole workforce as missing. This now reports each bucket
+// separately and computes the attendance rate against who was actually
+// expected, not the full headcount.
 router.get('/stats', auth, async (req, res) => {
   try {
     if (mongoose.connection.readyState !== 1) {
-      return res.status(200).json({ totalEmployees: 0, presentToday: 0, absent: 0, onTime: 0, late: 0, bySite: [] });
+      return res.status(200).json({
+        totalEmployees: 0, expected: 0, presentToday: 0, absent: 0,
+        onTime: 0, late: 0, onLeave: 0, weeklyOff: 0, holiday: 0,
+        stillClockedIn: 0, attendanceRate: null, bySite: [],
+      });
     }
 
-    // Supervisors are always pinned to their own site, regardless of what
-    // they pass in the query string — no way to peek at another site's numbers.
+    // Supervisors are always pinned to their own site regardless of what they
+    // pass in the query string — no way to peek at another site's numbers.
     const isSupervisor = req.user.role === 'supervisor' && req.user.workLocation;
     const workLocation = isSupervisor ? req.user.workLocation : req.query.workLocation;
-    const employeeFilter = { isActive: true };
+    const employeeFilter = Employee.rosterFilter();
     if (workLocation) employeeFilter.workLocation = workLocation;
 
-    const employees = await Employee.find(employeeFilter).select('_id workLocation');
-    const employeeIds = employees.map(e => e._id);
-    const totalEmployees = employees.length;
+    const employees = await Employee.find(employeeFilter).select('_id workLocation weeklyOff').lean();
+    const today = businessDate(new Date(), DEFAULT_TZ);
+    const day = await resolveDay(today, employees, DEFAULT_TZ);
 
-    const today = new Date().toISOString().split('T')[0];
-    const todaysLogs = await AttendanceLog.find({ date: today, employee: { $in: employeeIds } });
-
-    const presentToday = todaysLogs.length;
-    const onTime = todaysLogs.filter(log => log.status === 'VALID').length;
-    const late = todaysLogs.filter(log => log.status === 'LATE').length;
-    const absent = Math.max(0, totalEmployees - presentToday);
-
-    // Per-site breakdown — this is what makes the dashboard a multi-site view
-    // instead of a single aggregate number. Only computed for the unscoped
-    // call. Done as one aggregation joining employees -> today's logs,
-    // rather than pulling every employee/log into Node and joining in JS.
     let bySite = [];
     if (!workLocation) {
-      const [sites, siteCounts] = await Promise.all([
-        WorkLocation.find({ isActive: true }).select('name radiusMeters'),
-        Employee.aggregate([
-          { $match: { isActive: true } },
-          {
-            $lookup: {
-              from: 'attendancelogs',
-              let: { empId: '$_id' },
-              pipeline: [{ $match: { $expr: { $and: [{ $eq: ['$employee', '$$empId'] }, { $eq: ['$date', today] }] } } }],
-              as: 'log',
-            },
-          },
-          {
-            $group: {
-              _id: '$workLocation',
-              totalEmployees: { $sum: 1 },
-              presentToday: { $sum: { $cond: [{ $gt: [{ $size: '$log' }, 0] }, 1, 0] } },
-              late: { $sum: { $cond: [{ $eq: [{ $arrayElemAt: ['$log.status', 0] }, 'LATE'] }, 1, 0] } },
-            },
-          },
-        ]),
-      ]);
+      const sites = await WorkLocation.find({ isActive: true }).select('name radiusMeters').lean();
+      const allEmployees = await Employee.find(Employee.rosterFilter())
+        .select('_id workLocation weeklyOff').lean();
 
-      const countsBySite = new Map(siteCounts.map(c => [c._id ? c._id.toString() : 'unassigned', c]));
-      bySite = sites.map(site => {
-        const c = countsBySite.get(site._id.toString()) || { totalEmployees: 0, presentToday: 0, late: 0 };
-        return { siteId: site._id, siteName: site.name, totalEmployees: c.totalEmployees, presentToday: c.presentToday, late: c.late };
-      });
+      const bySiteId = new Map();
+      for (const emp of allEmployees) {
+        const key = emp.workLocation ? String(emp.workLocation) : 'unassigned';
+        if (!bySiteId.has(key)) bySiteId.set(key, []);
+        bySiteId.get(key).push(emp);
+      }
 
-      const unassigned = countsBySite.get('unassigned');
-      if (unassigned && unassigned.totalEmployees > 0) {
-        bySite.push({ siteId: null, siteName: 'Unassigned', totalEmployees: unassigned.totalEmployees, presentToday: unassigned.presentToday, late: unassigned.late });
+      // One resolveDay() per site rather than one query per employee — still
+      // a fixed number of queries per site (3), not per employee.
+      const siteDays = await Promise.all(
+        sites.map(async (site) => {
+          const siteEmployees = bySiteId.get(String(site._id)) || [];
+          const resolved = siteEmployees.length
+            ? await resolveDay(today, siteEmployees, DEFAULT_TZ)
+            : null;
+          return { site, resolved };
+        })
+      );
+
+      bySite = siteDays.map(({ site, resolved }) => ({
+        siteId: site._id,
+        siteName: site.name,
+        totalEmployees: resolved ? resolved.totalEmployees : 0,
+        expected: resolved ? resolved.expected : 0,
+        presentToday: resolved ? resolved.present : 0,
+        late: resolved ? resolved.late : 0,
+        onLeave: resolved ? resolved.onLeave : 0,
+        holiday: resolved ? resolved.holiday : 0,
+      }));
+
+      const unassigned = bySiteId.get('unassigned');
+      if (unassigned && unassigned.length > 0) {
+        const resolvedUnassigned = await resolveDay(today, unassigned, DEFAULT_TZ);
+        bySite.push({
+          siteId: null, siteName: 'Unassigned',
+          totalEmployees: resolvedUnassigned.totalEmployees,
+          expected: resolvedUnassigned.expected,
+          presentToday: resolvedUnassigned.present,
+          late: resolvedUnassigned.late,
+          onLeave: resolvedUnassigned.onLeave,
+          holiday: resolvedUnassigned.holiday,
+        });
       }
     }
 
-    res.status(200).json({ totalEmployees, presentToday, absent, onTime, late, bySite });
+    res.status(200).json({
+      totalEmployees: day.totalEmployees,
+      expected: day.expected,
+      presentToday: day.present,
+      absent: day.absent,
+      onTime: day.onTime,
+      late: day.late,
+      onLeave: day.onLeave,
+      weeklyOff: day.weeklyOff,
+      holiday: day.holiday,
+      stillClockedIn: day.stillClockedIn,
+      attendanceRate: day.attendanceRate,
+      bySite,
+    });
   } catch (error) {
-    // A genuine query failure and "0 employees registered" rendered
-    // identically to the dashboard before this — no way to tell a broken
-    // stats query apart from a real empty account.
     console.error('[Stats/GET]', error.message);
     res.status(500).json({ error: 'Failed to fetch dashboard stats' });
   }
 });
 
-// GET /api/v1/dashboard/trend?days=7 — real per-day attendance history for
-// the dashboard charts (present / on-time / late counts per day), replacing
-// what used to be today's single stat repeated across fake day labels.
-router.get('/trend', auth, async (req, res) => {
-  try {
-    const days = Math.min(Math.max(parseInt(req.query.days, 10) || 7, 1), 90);
-    const dates = [];
-    for (let i = days - 1; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      dates.push(d.toISOString().split('T')[0]);
-    }
+// GET /api/v1/dashboard/trend?days=7 — per-day attendance history for the
+// dashboard charts.
+router.get('/trend', auth,
+  [query('days').optional().isInt({ min: 1, max: 90 }).toInt()],
+  async (req, res) => {
+    try {
+      const days = req.query.days || 7;
+      // Business dates, oldest first — the previous version built these from
+      // the server's own local date, which on a UTC host drifted from the
+      // actual business day for hours at a time.
+      const dates = recentBusinessDates(days, DEFAULT_TZ).reverse();
 
-    if (mongoose.connection.readyState !== 1) {
-      return res.json(dates.map(date => ({ date, present: 0, onTime: 0, late: 0 })));
-    }
+      if (mongoose.connection.readyState !== 1) {
+        return res.json(dates.map(date => ({ date, present: 0, onTime: 0, late: 0 })));
+      }
 
-    const isSupervisor = req.user.role === 'supervisor' && req.user.workLocation;
-    const employeeFilter = { isActive: true };
-    if (isSupervisor) employeeFilter.workLocation = req.user.workLocation;
-    const employeeIds = isSupervisor ? (await Employee.find(employeeFilter).select('_id')).map(e => e._id) : null;
+      const isSupervisor = req.user.role === 'supervisor' && req.user.workLocation;
+      const employeeFilter = Employee.rosterFilter();
+      if (isSupervisor) employeeFilter.workLocation = req.user.workLocation;
+      const employeeIds = isSupervisor ? (await Employee.find(employeeFilter).select('_id')).map(e => e._id) : null;
 
-    const matchStage = { date: { $in: dates } };
-    if (employeeIds) matchStage.employee = { $in: employeeIds };
+      const matchStage = { date: { $in: dates } };
+      if (employeeIds) matchStage.employee = { $in: employeeIds };
 
-    const rows = await AttendanceLog.aggregate([
-      { $match: matchStage },
-      {
-        $group: {
-          _id: '$date',
-          present: { $sum: 1 },
-          onTime: { $sum: { $cond: [{ $eq: ['$status', 'VALID'] }, 1, 0] } },
-          late: { $sum: { $cond: [{ $eq: ['$status', 'LATE'] }, 1, 0] } },
+      const rows = await AttendanceLog.aggregate([
+        { $match: matchStage },
+        // Sorted first so $first below reliably picks each employee's
+        // earliest session of the day — the one whose LATE flag reflects
+        // when they actually arrived, not an arbitrary later session.
+        { $sort: { clockInTime: 1 } },
+        {
+          $group: {
+            _id: { date: '$date', employee: '$employee' },
+            firstStatus: { $first: '$status' },
+          },
         },
-      },
-    ]);
-    const byDate = new Map(rows.map(r => [r._id, r]));
+        {
+          $group: {
+            _id: '$_id.date',
+            present: { $sum: 1 },
+            onTime: { $sum: { $cond: [{ $eq: ['$firstStatus', 'VALID'] }, 1, 0] } },
+            late: { $sum: { $cond: [{ $eq: ['$firstStatus', 'LATE'] }, 1, 0] } },
+          },
+        },
+      ]);
+      const byDate = new Map(rows.map(r => [r._id, r]));
 
-    res.json(dates.map(date => {
-      const r = byDate.get(date);
-      return { date, present: r?.present || 0, onTime: r?.onTime || 0, late: r?.late || 0 };
-    }));
-  } catch (error) {
-    console.warn('[Trend Warning]', error.message);
-    res.status(500).json({ error: 'Failed to fetch attendance trend' });
+      res.json(dates.map(date => {
+        const r = byDate.get(date);
+        return { date, present: r?.present || 0, onTime: r?.onTime || 0, late: r?.late || 0 };
+      }));
+    } catch (error) {
+      console.warn('[Trend Warning]', error.message);
+      res.status(500).json({ error: 'Failed to fetch attendance trend' });
+    }
   }
-});
+);
 
 module.exports = router;

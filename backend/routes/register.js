@@ -1,33 +1,68 @@
 const express = require('express');
 const router = express.Router();
-const axios = require('axios');
 const mongoose = require('mongoose');
 const { body, validationResult } = require('express-validator');
 const Employee = require('../models/Employee');
 const Contractor = require('../models/Contractor');
+const WorkLocation = require('../models/WorkLocation');
 const { findDuplicateFace } = require('../utils/duplicateFaceCheck');
-const { withLock } = require('../utils/asyncMutex');
-const { callWithRetry } = require('../utils/mlServiceCall');
+const { withLock } = require('../utils/mongoLock');
+const ml = require('../utils/mlServiceCall');
+const { validateNationalId, hashNationalId, last4 } = require('../utils/nationalId');
+const { requireKioskDevice } = require('../middleware/kiosk');
+const audit = require('../utils/audit');
+const { notifyAdmins } = require('../utils/notify');
 
-const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+// Self-registrations land in PENDING_APPROVAL, not straight into the roster.
+//
+// The kiosk is a public page: without an approval step, anyone who reaches
+// the URL can add themselves as an employee and start accumulating paid
+// hours. A pending profile cannot clock in (see Employee.matchableFilter)
+// until a human in HR confirms the person actually works here — which is
+// also precisely the "HR concurrence" the owner asked for.
+//
+// Registrations created by an authenticated HR/admin user through the
+// dashboard are approved immediately; the operator *is* the approval.
 
+// Whether a face may be re-used for a new profile depends on why it collided,
+// so the duplicate check reports which case it hit rather than a bare boolean.
+function duplicateMessage(duplicate) {
+  const { employee } = duplicate;
+  if (employee.status === Employee.STATUS.INACTIVE) {
+    return {
+      status: 409,
+      error: `This face matches a former employee profile (${employee.name}, ${employee.employeeId}). ` +
+             'Please ask HR to reactivate that profile instead of registering again.',
+      code: 'DUPLICATE_FACE_INACTIVE',
+    };
+  }
+  if (employee.status === Employee.STATUS.PENDING) {
+    return {
+      status: 409,
+      error: `You have already registered as ${employee.name} (${employee.employeeId}) and are waiting for HR approval.`,
+      code: 'ALREADY_PENDING',
+    };
+  }
+  return {
+    status: 409,
+    error: `This face is already registered as ${employee.name} (${employee.employeeId}). ` +
+           'Each person can only have one attendance profile.',
+    code: 'DUPLICATE_FACE',
+  };
+}
 
-// POST /api/v1/register — New employee self-registration via scanner app
 router.post('/',
+  requireKioskDevice,
   [
-    body('name').notEmpty().trim().withMessage('Full name is required'),
+    body('name').notEmpty().trim().isLength({ min: 3, max: 100 }).withMessage('Full name is required'),
     body('phone').matches(/^\d{10}$/).withMessage('Phone must be 10 digits'),
-    body('nationalId').custom((val, { req }) => {
-      const id = val || req.body.aadhaar;
-      if (!id || !/^\d{12}$/.test(id)) throw new Error('Aadhaar number must be 12 digits');
-      return true;
-    }),
+    body('idType').optional().isIn(['AADHAAR', 'VOTER_ID', 'PAN', 'DRIVING_LICENCE', 'OTHER']),
     body('dateOfBirth').isISO8601().withMessage('Valid date of birth required'),
-    // The kiosk sends a 2-frame `images` capture (enables a real liveness
-    // check on enrollment, same as clock-in); the dashboard's admin-upload
-    // form sends a single `imageBase64` photo, which liveness can't apply
-    // to (no motion data from a static upload) — that path is trusted
-    // because it's an authenticated operator action, not a public one.
+    // The kiosk sends a 2-frame `images` capture (which enables a real
+    // liveness check on enrolment, same as clock-in); the dashboard's
+    // admin-upload form sends a single `imageBase64` photo, which liveness
+    // cannot apply to (no motion data from a static upload) — that path is
+    // trusted because it is an authenticated operator action, not a public one.
     body().custom((_, { req }) => {
       const hasImages = Array.isArray(req.body.images) && req.body.images.length > 0;
       const hasSingle = typeof req.body.imageBase64 === 'string' && req.body.imageBase64.length > 0;
@@ -45,119 +80,227 @@ router.post('/',
     if (!errors.isEmpty()) return res.status(400).json({ error: errors.array()[0].msg });
 
     try {
-      const { name, phone, dateOfBirth, workLocation, shiftTemplate, serviceTag, contractor } = req.body;
-      const nationalId = req.body.nationalId || req.body.aadhaar;
-      // Kiosk sends `images` (2 frames, enables liveness below); dashboard's
-      // admin photo-upload sends a single `imageBase64` (no motion data
-      // possible, so no liveness check applies to that trusted path).
+      const { name, phone, dateOfBirth, shiftTemplate, serviceTag, contractor } = req.body;
+      const idType = req.body.idType || 'AADHAAR';
+
+      // Validate the ID properly rather than only checking its length. A
+      // mistyped Aadhaar creates a permanently wrong record *and* — because
+      // the ID is the uniqueness key — locks the real owner of that number
+      // out of ever registering. Aadhaar carries a Verhoeff check digit
+      // specifically so this is detectable.
+      const rawId = req.body.nationalId || req.body.aadhaar;
+      const idCheck = validateNationalId(rawId, idType);
+      if (!idCheck.ok) return res.status(400).json({ error: idCheck.reason, code: 'INVALID_NATIONAL_ID' });
+
+      const nationalIdHash = hashNationalId(idCheck.value);
+      const nationalIdLast4 = last4(idCheck.value);
+
       const frames = Array.isArray(req.body.images) && req.body.images.length > 0
         ? req.body.images
         : (req.body.imageBase64 ? [req.body.imageBase64] : []);
 
-      if (mongoose.connection.readyState === 1 && contractor) {
+      if (mongoose.connection.readyState !== 1) {
+        return res.status(503).json({ error: 'Database unavailable. Please try again shortly.' });
+      }
+
+      // Site resolution, in order of trustworthiness: the authenticated
+      // kiosk's own site, then an explicit choice from the dashboard/kiosk
+      // form. A kiosk lives at a site, so its token is the better source.
+      const requestedSite = req.body.workLocation || null;
+      const workLocation = req.kioskSiteId || requestedSite || null;
+
+      // Fail closed on the site. Without one, the employee has no geofence
+      // and can never be marked late — the two controls that make this
+      // system worth having. Previously the kiosk form never collected a
+      // site at all, so every self-registration silently had neither.
+      if (!workLocation) {
+        return res.status(400).json({
+          error: 'Please select the site where you work before registering.',
+          code: 'SITE_REQUIRED',
+        });
+      }
+      const site = await WorkLocation.findOne({ _id: workLocation, isActive: true }).select('name');
+      if (!site) {
+        return res.status(400).json({ error: 'That site is not available. Please choose another.', code: 'INVALID_SITE' });
+      }
+
+      if (contractor) {
         const contractorDoc = await Contractor.findById(contractor);
         if (contractorDoc && contractorDoc.headcountCap) {
-          const currentCount = await Employee.countDocuments({ contractor, isActive: true });
+          const currentCount = await Employee.countDocuments({
+            contractor,
+            status: { $in: [Employee.STATUS.ACTIVE, Employee.STATUS.PENDING] },
+          });
           if (currentCount >= contractorDoc.headcountCap) {
             return res.status(400).json({
-              error: `${contractorDoc.name} is at its staffing cap (${contractorDoc.headcountCap}). Contact your admin to raise the limit.`
+              error: `${contractorDoc.name} is at its staffing cap (${contractorDoc.headcountCap}). Contact your admin to raise the limit.`,
+              code: 'CONTRACTOR_CAP',
             });
           }
         }
       }
 
-      if (mongoose.connection.readyState === 1) {
-        const existing = await Employee.findOne({ $or: [{ phone }, { nationalId }] });
-        if (existing) {
-          return res.status(400).json({ error: 'An employee with this phone or Aadhaar number already exists.' });
+      // ID collision. Scoped by status so the message is actionable: a
+      // *former* employee's ID must lead to "ask HR to reactivate", not the
+      // dead end the previous unscoped check produced — it refused the
+      // registration and offered no way forward, so a rejoining employee
+      // could never be re-enrolled at all.
+      const existingById = await Employee.findOne({ nationalIdHash }).select('name employeeId status');
+      if (existingById) {
+        if (existingById.status === Employee.STATUS.INACTIVE) {
+          return res.status(409).json({
+            error: `This ID belongs to a former employee profile (${existingById.name}, ${existingById.employeeId}). ` +
+                   'Please ask HR to reactivate it rather than registering again.',
+            code: 'ID_BELONGS_TO_INACTIVE',
+            employeeId: existingById.employeeId,
+          });
         }
+        if (existingById.status === Employee.STATUS.PENDING) {
+          return res.status(409).json({
+            error: 'You have already registered and are waiting for HR approval.',
+            code: 'ALREADY_PENDING',
+          });
+        }
+        return res.status(409).json({
+          error: 'An employee with this ID number is already registered.',
+          code: 'DUPLICATE_ID',
+        });
       }
 
-      let faceEmbedding = [];
+      // Extract the enrolment embedding.
+      let faceEmbedding;
       try {
-        const mlRes = await callWithRetry((timeout) =>
-          axios.post(`${ML_SERVICE_URL}/extract-embedding`, { image: frames[0] }, { timeout })
-        );
-        faceEmbedding = mlRes.data.embedding || [];
-        if (!mlRes.data.face_detected || faceEmbedding.length === 0) {
-          return res.status(400).json({ error: 'No face detected in the image. Please align face clearly.' });
-        }
+        faceEmbedding = await ml.extractEmbedding(frames[0]);
       } catch (mlErr) {
-        if (mlErr.response && mlErr.response.status === 422) {
-          return res.status(400).json({ error: mlErr.response.data?.detail || 'No face detected in the image. Please align your face clearly in good lighting.' });
+        if (mlErr && mlErr.isServiceError) {
+          return res.status(mlErr.status).json({ error: mlErr.error, code: mlErr.code });
         }
         return res.status(503).json({ error: 'Face recognition service unavailable. Cannot register without biometric data.' });
       }
 
-      // Liveness check — only possible (and only run) when 2+ frames came
-      // in, i.e. the kiosk's own capture flow. Without this, someone could
-      // enroll a "ghost" identity from a printed photo of a person who
-      // isn't registered yet — the duplicate-face check below only catches
-      // faces that already have a profile, so it doesn't cover this case.
+      // Liveness on enrolment — only possible with 2+ frames, i.e. the
+      // kiosk's own capture flow. Without it, someone could enrol a "ghost"
+      // identity from a printed photo of a person who has no profile yet;
+      // the duplicate-face check below only catches faces that *already*
+      // have one, so it does not cover that case.
       if (frames.length >= 2) {
         try {
-          const livenessRes = await callWithRetry((timeout) =>
-            axios.post(`${ML_SERVICE_URL}/liveness-check`, { images: frames }, { timeout })
-          , { fastTimeout: 4000 });
-          if (!livenessRes.data || livenessRes.data.is_live !== true) {
-            return res.status(403).json({ error: 'Liveness check failed. Please face the camera directly in good lighting and try again.' });
+          const liveness = await ml.checkLiveness(frames);
+          if (!liveness || liveness.is_live !== true) {
+            const tooDark = Boolean(liveness && liveness.too_dark);
+            return res.status(tooDark ? 400 : 403).json({
+              error: tooDark
+                ? (liveness.details || 'Too dark to scan clearly — please move to better light and try again.')
+                : 'Liveness check failed. Please face the camera directly in good lighting and try again.',
+              code: tooDark ? 'TOO_DARK' : 'LIVENESS_FAILED',
+            });
           }
         } catch (livenessErr) {
+          if (livenessErr && livenessErr.isServiceError) {
+            return res.status(livenessErr.status).json({ error: livenessErr.error, code: livenessErr.code });
+          }
           return res.status(503).json({ error: 'Face recognition service unavailable. Please try again.' });
         }
       }
 
-      // Block duplicate enrollment — the same face registering under a second
-      // identity is the classic buddy-punching setup (one person clocks in
-      // for two "employees"). The check-then-insert has to be serialized
-      // (see utils/asyncMutex.js) — otherwise two concurrent registrations
-      // for the same face can both pass the check before either has saved.
-      let employeeId = null;
-      if (mongoose.connection.readyState === 1) {
-        employeeId = await withLock(async () => {
-          try {
-            const duplicate = await findDuplicateFace(faceEmbedding);
-            if (duplicate) {
-              throw { status: 409, error: `This face is already registered as ${duplicate.name} (${duplicate.employeeId}). Each person can only have one attendance profile.` };
-            }
-          } catch (dupErr) {
-            // Same fix as identifyAndVerify.js — don't let a raw axios
-            // error (which also carries a `.status` property in newer
-            // axios versions) get mistaken for one of our own throws.
-            if (dupErr.status && !dupErr.isAxiosError) throw dupErr;
-            console.error('[Register] Duplicate-face check failed:', dupErr.message);
-            throw { status: 503, error: 'Face verification service unavailable. Please try again.' };
-          }
+      // Duplicate-face enrolment is the classic buddy-punching setup: one
+      // person holding two profiles so they can clock in twice. The
+      // check-then-insert must be serialised, or two concurrent
+      // registrations of the same face both pass before either has saved.
+      //
+      // The lock is now MongoDB-backed rather than in-process — the previous
+      // promise-chain mutex only served a single Node process, so any
+      // horizontal scale (or a rolling deploy where two instances overlap)
+      // reopened exactly the hole it was there to close.
+      const createdBy = req.user && req.user.id ? req.user.id : null;
+      const selfRegistered = !createdBy;
 
-          const newEmployee = new Employee({
+      let created;
+      try {
+        created = await withLock('employee-face-enrolment', async () => {
+          const duplicate = await findDuplicateFace(faceEmbedding);
+          if (duplicate) throw { isServiceError: true, ...duplicateMessage(duplicate) };
+
+          const employee = new Employee({
             name,
             phone,
-            nationalId,
+            idType,
+            nationalIdHash,
+            nationalIdLast4,
             dateOfBirth,
-            faceEmbedding,
-            workLocation: workLocation || null,
+            faceEmbeddings: [faceEmbedding],
+            faceEnrolledAt: new Date(),
+            faceEnrolledBy: createdBy,
+            workLocation,
             shiftTemplate: shiftTemplate || null,
             serviceTag: serviceTag || null,
             contractor: contractor || null,
-            consent: { consentedAt: new Date() },
+            consent: {
+              consentedAt: new Date(),
+              policyVersion: process.env.PRIVACY_POLICY_VERSION || '1.0',
+            },
+            // An operator-created record is approved by definition; a public
+            // self-registration waits for a human.
+            status: selfRegistered ? Employee.STATUS.PENDING : Employee.STATUS.ACTIVE,
+            approvedBy: selfRegistered ? null : createdBy,
+            approvedAt: selfRegistered ? null : new Date(),
           });
-          await newEmployee.save();
-          return newEmployee.employeeId; // real, atomically-assigned ID — matches what's stored
-        });
+          await employee.save();
+          return employee;
+        }, { ttlMs: 20000, waitMs: 15000 });
+      } catch (lockErr) {
+        if (lockErr && lockErr.isServiceError) {
+          return res.status(lockErr.status).json({ error: lockErr.error, code: lockErr.code });
+        }
+        if (lockErr && lockErr.code === 'LOCK_TIMEOUT') {
+          return res.status(503).json({
+            error: 'Too many registrations happening at once. Please wait a moment and try again.',
+            code: 'ENROLMENT_BUSY',
+          });
+        }
+        throw lockErr;
       }
 
-      res.status(201).json({
-        success: true,
-        employeeId,
-        name: name,
-        message: `Welcome ${name}! Your biometric profile has been registered. You can now clock in.`
+      await audit.record(req, {
+        action: audit.ACTIONS.EMPLOYEE_REGISTERED,
+        targetModel: 'Employee',
+        targetId: created._id,
+        targetLabel: `${created.name} (${created.employeeId})`,
+        after: { status: created.status, workLocation: site.name, selfRegistered },
       });
-    } catch (error) {
-      if (error.status) {
-        return res.status(error.status).json({ error: error.error });
+
+      if (selfRegistered) {
+        // HR has to know a profile is waiting, or approvals sit for days and
+        // the employee assumes the system is broken.
+        notifyAdmins(
+          `New employee registration awaiting approval: ${created.name}`,
+          [
+            `${created.name} (${created.employeeId}) registered at ${site.name} and is waiting for approval.`,
+            '',
+            'They cannot clock in until approved. Review pending registrations in the dashboard under Employees → Pending.',
+          ].join('\n')
+        ).catch(() => {});
       }
-      if (error.code === 11000) {
-        return res.status(400).json({ error: 'Phone or Aadhaar number already registered.' });
+
+      return res.status(201).json({
+        success: true,
+        employeeId: created.employeeId,
+        name: created.name,
+        status: created.status,
+        pendingApproval: selfRegistered,
+        message: selfRegistered
+          ? `Thanks ${created.name}! Your details are registered as ${created.employeeId}. ` +
+            'Your supervisor or HR needs to approve your profile before you can clock in — ' +
+            'this usually happens the same day.'
+          : `${created.name} registered as ${created.employeeId} and can clock in now.`,
+      });
+
+    } catch (error) {
+      if (error && error.isServiceError) {
+        return res.status(error.status).json({ error: error.error, code: error.code });
+      }
+      if (error && error.code === 11000) {
+        return res.status(409).json({ error: 'An employee with this ID number is already registered.', code: 'DUPLICATE_ID' });
       }
       console.error('[Register]', error.message);
       res.status(500).json({ error: 'Registration failed. Please try again.' });

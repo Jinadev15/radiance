@@ -13,7 +13,7 @@ router.get('/', auth, requireAdminOrHr, async (req, res) => {
     const [contractors, counts] = await Promise.all([
       Contractor.find({ isActive: true }).populate('workLocation', 'name').sort({ name: 1 }),
       Employee.aggregate([
-        { $match: { isActive: true, contractor: { $ne: null } } },
+        { $match: { status: Employee.STATUS.ACTIVE, contractor: { $ne: null } } },
         { $group: { _id: '$contractor', count: { $sum: 1 } } },
       ]),
     ]);

@@ -13,6 +13,9 @@ import {
   Tag,
   ClipboardEdit,
   ShieldCheck,
+  CalendarOff,
+  CalendarDays,
+  History,
 } from 'lucide-react';
 
 const PRODUCT_NAV = [
@@ -23,8 +26,11 @@ const PRODUCT_NAV = [
   { href: '/dashboard/billing', label: 'Services & Contractors', icon: Tag, roles: ['admin', 'hr'] },
   { href: '/dashboard/attendance', label: 'Attendance', icon: ClipboardList, roles: ['admin', 'hr', 'supervisor'] },
   { href: '/dashboard/regularization', label: 'Regularization', icon: ClipboardEdit, roles: ['admin', 'hr'] },
+  { href: '/dashboard/leave', label: 'Leave', icon: CalendarOff, roles: ['admin', 'hr', 'supervisor'] },
+  { href: '/dashboard/holidays', label: 'Holidays', icon: CalendarDays, roles: ['admin', 'hr'] },
   { href: '/dashboard/reports', label: 'Reports', icon: BarChart3, roles: ['admin', 'hr', 'supervisor'] },
   { href: '/dashboard/users', label: 'Users', icon: ShieldCheck, roles: ['admin'] },
+  { href: '/dashboard/audit', label: 'Audit Log', icon: History, roles: ['admin'] },
 ];
 
 export function DashboardSidebar({ isOpen, setIsOpen, role }: { isOpen: boolean, setIsOpen: (val: boolean) => void, role?: string }) {

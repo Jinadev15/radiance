@@ -3,7 +3,7 @@
 import React, { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { Users, Search, Edit, UserX, MapPin, Loader2, AlertTriangle, Clock, UserPlus } from 'lucide-react';
+import { Users, Search, Edit, UserX, UserCheck, MapPin, Loader2, AlertTriangle, Clock, UserPlus, Check, X, RotateCcw } from 'lucide-react';
 import api from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import {
@@ -11,22 +11,18 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { buttonVariants } from '@/components/ui/button';
-
-interface Employee {
-  _id: string;
-  employeeId: string;
-  name: string;
-  phone: string;
-  nationalId: string;
-  dateOfBirth: string;
-  shiftTemplate: { _id: string; name: string; startTime: string; endTime: string } | null;
-  workLocation: { _id: string; name: string; address?: string } | null;
-  isActive: boolean;
-  createdAt: string;
-}
+import type { Employee, EmployeeStatus } from '@/lib/types';
 
 interface Site { _id: string; name: string; }
 interface Shift { _id: string; name: string; startTime: string; endTime: string; }
+
+// The tabs this page shows. Kept separate from the raw status enum so the
+// label wording ("Pending Approval", not "PENDING_APPROVAL") lives in one place.
+const TABS: { key: EmployeeStatus; label: string }[] = [
+  { key: 'ACTIVE', label: 'Approved' },
+  { key: 'PENDING_APPROVAL', label: 'Pending Approval' },
+  { key: 'INACTIVE', label: 'Inactive' },
+];
 
 export default function EmployeesPage() {
   return (
@@ -43,7 +39,9 @@ export default function EmployeesPage() {
 function EmployeesPageInner() {
   const searchParams = useSearchParams();
   const { toast } = useToast();
+  const [tab, setTab] = useState<EmployeeStatus>('ACTIVE');
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [counts, setCounts] = useState<{ active: number; pending: number; inactive: number } | null>(null);
   const [sites, setSites] = useState<Site[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
 
@@ -60,16 +58,28 @@ function EmployeesPageInner() {
     const q = searchParams.get('q') || '';
     setSearch(q);
   }, [searchParams]);
+
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({ name: '', shiftTemplate: '', workLocation: '' });
   const [deactivateTarget, setDeactivateTarget] = useState<Employee | null>(null);
+  const [rejectTarget, setRejectTarget] = useState<Employee | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [processingId, setProcessingId] = useState<string | null>(null);
 
   const fetchData = async () => {
+    setLoading(true);
     try {
-      const [emps, siteList, shiftList] = await Promise.all([api.getEmployees(), api.getLocations(), api.getShifts()]);
-      setEmployees(emps);
+      const [empPage, siteList, shiftList, counts] = await Promise.all([
+        api.getEmployeesPage({ status: tab, limit: 200 }),
+        api.getLocations(),
+        api.getShifts(),
+        api.getEmployeeCounts(),
+      ]);
+      setEmployees(empPage.employees);
       setSites(siteList);
       setShifts(shiftList);
+      setCounts(counts);
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load data');
     } finally {
@@ -77,7 +87,7 @@ function EmployeesPageInner() {
     }
   };
 
-  useEffect(() => { fetchData(); }, []);
+  useEffect(() => { fetchData(); }, [tab]);
 
   const handleEdit = (emp: Employee) => {
     setEditingId(emp._id);
@@ -116,24 +126,77 @@ function EmployeesPageInner() {
     }
   };
 
+  // Approval needs no extra input — the site was already required at
+  // registration, so this is a single confirming click. Attendance recorded
+  // before this point is kept exactly as it was scanned; approving only
+  // flips who counts as a confirmed employee for payroll.
+  const handleApprove = async (emp: Employee) => {
+    setProcessingId(emp._id);
+    try {
+      await api.approveEmployee(emp._id);
+      toast({ title: `${emp.name} approved`, description: 'Their existing attendance is unchanged — this only confirms them for payroll.' });
+      fetchData();
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Approval failed', description: err instanceof Error ? err.message : undefined });
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
+  const handleReject = async () => {
+    if (!rejectTarget || !rejectReason.trim()) return;
+    setProcessingId(rejectTarget._id);
+    try {
+      await api.rejectEmployee(rejectTarget._id, rejectReason.trim());
+      toast({ title: `${rejectTarget.name}'s registration rejected` });
+      fetchData();
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Rejection failed', description: err instanceof Error ? err.message : undefined });
+    } finally {
+      setProcessingId(null);
+      setRejectTarget(null);
+      setRejectReason('');
+    }
+  };
+
+  const handleReactivate = async (emp: Employee) => {
+    setProcessingId(emp._id);
+    try {
+      const result = await api.reactivateEmployee(emp._id);
+      toast({
+        title: `${emp.name} reactivated`,
+        description: result.needsFaceReenrolment ? 'Their face data was erased — they need to re-enrol at the kiosk before they can clock in.' : undefined,
+      });
+      fetchData();
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Reactivation failed', description: err instanceof Error ? err.message : undefined });
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
   const filtered = employees.filter(e =>
     e.name.toLowerCase().includes(search.toLowerCase()) ||
     e.employeeId.toLowerCase().includes(search.toLowerCase()) ||
     e.phone.includes(search)
   );
 
-  if (loading) return (
-    <div className="p-6 flex items-center justify-center h-64">
-      <Loader2 size={32} className="animate-spin text-accent" />
-    </div>
-  );
+  const tabCount = (key: EmployeeStatus) => {
+    if (!counts) return null;
+    if (key === 'ACTIVE') return counts.active;
+    if (key === 'PENDING_APPROVAL') return counts.pending;
+    if (key === 'INACTIVE') return counts.inactive;
+    return null;
+  };
 
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-text-primary text-display">Employees</h1>
-          <p className="text-text-secondary">{employees.length} registered employees</p>
+          <p className="text-text-secondary">
+            An employee can clock in as soon as they register at the kiosk — approval here confirms them for payroll, it doesn&apos;t gate attendance.
+          </p>
         </div>
         <Link
           href="/dashboard/employees/register"
@@ -142,6 +205,32 @@ function EmployeesPageInner() {
           <UserPlus size={16} /> Add Employee
         </Link>
       </div>
+
+      {/* Status tabs */}
+      <div className="flex gap-2">
+        {TABS.map(t => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-colors ${
+              tab === t.key ? 'bg-accent-muted text-accent border border-accent-border' : 'bg-surface-elevated text-text-secondary border border-border'
+            }`}
+          >
+            {t.label}
+            {tabCount(t.key) !== null && (
+              <span className={`px-1.5 py-0.5 rounded-full text-xs ${tab === t.key ? 'bg-accent/20' : 'bg-surface text-text-tertiary'}`}>
+                {tabCount(t.key)}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'PENDING_APPROVAL' && employees.length > 0 && (
+        <div className="badge-warning rounded-lg p-3 text-sm">
+          These employees are already clocking in and their attendance is being recorded — approving them here only confirms they're a real employee before their hours are paid.
+        </div>
+      )}
 
       {error && <div className="badge-danger rounded-xl p-4"><p className="text-sm">{error}</p></div>}
 
@@ -161,6 +250,9 @@ function EmployeesPageInner() {
 
       {/* Table */}
       <div className="surface rounded-xl overflow-hidden">
+        {loading ? (
+          <div className="p-12 flex justify-center"><Loader2 size={28} className="animate-spin text-accent" /></div>
+        ) : (
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
@@ -172,7 +264,9 @@ function EmployeesPageInner() {
             </thead>
             <tbody className="divide-y divide-border-subtle">
               {filtered.length === 0 ? (
-                <tr><td colSpan={8} className="text-center py-12 text-text-tertiary">No employees found</td></tr>
+                <tr><td colSpan={8} className="text-center py-12 text-text-tertiary">
+                  {tab === 'PENDING_APPROVAL' ? 'Nothing waiting for approval right now.' : 'No employees found'}
+                </td></tr>
               ) : filtered.map(emp => (
                 <tr key={emp._id} className="hover:bg-surface-elevated transition-colors">
                   {editingId === emp._id ? (
@@ -237,17 +331,44 @@ function EmployeesPageInner() {
                       </td>
                       <td className="px-4 py-3 text-text-secondary text-sm text-mono">{new Date(emp.createdAt).toLocaleDateString()}</td>
                       <td className="px-4 py-3">
-                        <div className="flex gap-2">
-                          {/* Disabled (not hidden) while another row is being edited — clicking
-                              Edit elsewhere used to silently discard whatever was unsaved in the
-                              open row, with no warning. Only one row can be edited at a time now. */}
-                          <button onClick={() => handleEdit(emp)} disabled={editingId !== null} aria-label={`Edit ${emp.name}`} title={editingId !== null ? 'Finish or cancel the current edit first' : 'Edit'} className="p-1.5 text-text-secondary hover:text-accent hover:bg-accent-muted rounded transition-colors disabled:opacity-30 disabled:pointer-events-none">
-                            <Edit size={14} />
+                        {tab === 'PENDING_APPROVAL' ? (
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => handleApprove(emp)}
+                              disabled={processingId === emp._id}
+                              className="flex items-center gap-1.5 px-3 py-1.5 badge-success rounded-lg text-xs font-medium disabled:opacity-50"
+                            >
+                              <Check size={13} /> Approve
+                            </button>
+                            <button
+                              onClick={() => setRejectTarget(emp)}
+                              disabled={processingId === emp._id}
+                              className="flex items-center gap-1.5 px-3 py-1.5 badge-danger rounded-lg text-xs font-medium disabled:opacity-50"
+                            >
+                              <X size={13} /> Reject
+                            </button>
+                          </div>
+                        ) : tab === 'INACTIVE' ? (
+                          <button
+                            onClick={() => handleReactivate(emp)}
+                            disabled={processingId === emp._id}
+                            className="flex items-center gap-1.5 px-3 py-1.5 badge-success rounded-lg text-xs font-medium disabled:opacity-50"
+                          >
+                            <RotateCcw size={13} /> Reactivate
                           </button>
-                          <button onClick={() => setDeactivateTarget(emp)} disabled={editingId !== null} aria-label={`Deactivate ${emp.name}`} title="Deactivate" className="p-1.5 text-text-secondary hover:text-danger hover:bg-danger-muted rounded transition-colors disabled:opacity-30 disabled:pointer-events-none">
-                            <UserX size={14} />
-                          </button>
-                        </div>
+                        ) : (
+                          <div className="flex gap-2">
+                            {/* Disabled (not hidden) while another row is being edited — clicking
+                                Edit elsewhere used to silently discard whatever was unsaved in the
+                                open row, with no warning. Only one row can be edited at a time now. */}
+                            <button onClick={() => handleEdit(emp)} disabled={editingId !== null} aria-label={`Edit ${emp.name}`} title={editingId !== null ? 'Finish or cancel the current edit first' : 'Edit'} className="p-1.5 text-text-secondary hover:text-accent hover:bg-accent-muted rounded transition-colors disabled:opacity-30 disabled:pointer-events-none">
+                              <Edit size={14} />
+                            </button>
+                            <button onClick={() => setDeactivateTarget(emp)} disabled={editingId !== null} aria-label={`Deactivate ${emp.name}`} title="Deactivate" className="p-1.5 text-text-secondary hover:text-danger hover:bg-danger-muted rounded transition-colors disabled:opacity-30 disabled:pointer-events-none">
+                              <UserX size={14} />
+                            </button>
+                          </div>
+                        )}
                       </td>
                     </>
                   )}
@@ -256,6 +377,7 @@ function EmployeesPageInner() {
             </tbody>
           </table>
         </div>
+        )}
       </div>
 
       <AlertDialog open={!!deactivateTarget} onOpenChange={open => !open && setDeactivateTarget(null)}>
@@ -267,6 +389,38 @@ function EmployeesPageInner() {
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleDeactivate} className={buttonVariants({ variant: 'destructive' })}>Deactivate</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!rejectTarget} onOpenChange={open => { if (!open) { setRejectTarget(null); setRejectReason(''); } }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reject {rejectTarget?.name}&apos;s registration?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Their face data will be erased and their attendance history stays on record but they will never be able to clock in again under this profile.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="px-1">
+            <label htmlFor="reject-reason" className="text-xs font-medium text-text-secondary">Reason (required)</label>
+            <textarea
+              id="reject-reason"
+              value={rejectReason}
+              onChange={e => setRejectReason(e.target.value)}
+              rows={2}
+              placeholder="e.g. Not a Radiance employee, could not be verified with HR"
+              className="input-base w-full mt-1 p-2 text-sm"
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleReject}
+              disabled={!rejectReason.trim()}
+              className={buttonVariants({ variant: 'destructive' })}
+            >
+              Reject
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

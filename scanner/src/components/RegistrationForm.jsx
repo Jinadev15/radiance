@@ -1,13 +1,40 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { fetchSites, kioskSiteId } from '../utils/api';
 
+// A site is now required to register.
+//
+// The previous version never collected one at all, so every self-registered
+// employee saved with workLocation: null — and the backend's geofence check
+// was wrapped in `if (employee.workLocation)`, so a missing site silently
+// disabled the location check entirely rather than blocking anything. Every
+// self-registered employee could clock in from anywhere. If this kiosk is
+// bound to a site via VITE_KIOSK_SITE_ID, that site is used automatically
+// and the picker is skipped — a kiosk lives at a site, it shouldn't have to
+// ask.
 export default function RegistrationForm({ onSubmit, onBack }) {
+  const boundSiteId = kioskSiteId();
+
   const [formData, setFormData] = useState({
     name: '',
     phone: '',
     aadhaar: '',
     dob: '',
+    workLocation: boundSiteId || '',
     consent: false,
   });
+  const [sites, setSites] = useState([]);
+  const [sitesLoading, setSitesLoading] = useState(!boundSiteId);
+  const [sitesError, setSitesError] = useState(null);
+
+  useEffect(() => {
+    if (boundSiteId) return; // no need to fetch a list if this kiosk only offers its own site
+    let cancelled = false;
+    fetchSites()
+      .then(list => { if (!cancelled) setSites(list); })
+      .catch(err => { if (!cancelled) setSitesError(err.message || 'Could not load sites'); })
+      .finally(() => { if (!cancelled) setSitesLoading(false); });
+    return () => { cancelled = true; };
+  }, [boundSiteId]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -22,7 +49,8 @@ export default function RegistrationForm({ onSubmit, onBack }) {
     }
   };
 
-  const isValid = formData.name.length > 2 && formData.phone.length === 10 && formData.aadhaar.length === 12 && formData.dob !== '' && formData.consent;
+  const isValid = formData.name.length > 2 && formData.phone.length === 10 &&
+    formData.aadhaar.length === 12 && formData.dob !== '' && formData.workLocation !== '' && formData.consent;
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -103,6 +131,35 @@ export default function RegistrationForm({ onSubmit, onBack }) {
                 className="form-input"
               />
             </div>
+
+            {!boundSiteId && (
+              <div className="form-group">
+                <label className="form-label" htmlFor="reg-site">Work Site</label>
+                {sitesLoading ? (
+                  <p className="hero-subtitle" style={{ margin: 0 }}>Loading sites…</p>
+                ) : sitesError ? (
+                  <p className="status-banner status-banner--warning" style={{ margin: 0 }}>
+                    {sitesError} — please ask your supervisor for help registering.
+                  </p>
+                ) : sites.length === 0 ? (
+                  <p className="status-banner status-banner--warning" style={{ margin: 0 }}>
+                    No sites are set up yet. Please ask your supervisor to add one before registering.
+                  </p>
+                ) : (
+                  <select
+                    id="reg-site"
+                    name="workLocation"
+                    value={formData.workLocation}
+                    onChange={handleChange}
+                    required
+                    className="form-input"
+                  >
+                    <option value="" disabled>Select your work site…</option>
+                    {sites.map(s => <option key={s._id} value={s._id}>{s.name}</option>)}
+                  </select>
+                )}
+              </div>
+            )}
 
             <label className="form-consent">
               <input

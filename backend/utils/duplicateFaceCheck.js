@@ -1,28 +1,53 @@
-// Checks a newly-captured face embedding against every already-registered
-// employee, using the same cosine-similarity matcher as clock-in recognition.
-// This is what stops the classic buddy-punching setup: registering a second
-// "ghost" identity using a photo of someone who already has an account.
-const axios = require('axios');
+// Checks a newly-captured face embedding against already-enrolled employees,
+// using the same matcher as clock-in recognition.
+//
+// This is what stops the classic buddy-punching setup: enrolling a second
+// "ghost" identity from a photo of someone who already has a profile, so one
+// person can clock in twice.
 const Employee = require('../models/Employee');
+const ml = require('./mlServiceCall');
 
-const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+/**
+ * @param {number[]} newEmbedding
+ * @param {object} [options]
+ * @param {*} [options.excludeEmployeeId]  skip this employee — required when
+ *        re-enrolling someone's own face, otherwise they always collide with
+ *        themselves and re-enrolment is impossible.
+ * @param {boolean} [options.includeInactive=true]  also compare against
+ *        deactivated profiles. A former employee's face reappearing is
+ *        something HR needs to know about (it is either a rehire or an
+ *        attempt to enrol a second profile), so the default is to look.
+ * @returns {Promise<{employee: object, confidence: number}|null>}
+ */
+async function findDuplicateFace(newEmbedding, { excludeEmployeeId, includeInactive = true } = {}) {
+  const statuses = includeInactive
+    ? [Employee.STATUS.ACTIVE, Employee.STATUS.PENDING, Employee.STATUS.INACTIVE]
+    : [Employee.STATUS.ACTIVE, Employee.STATUS.PENDING];
 
-// Returns the colliding Employee document if this face already matches
-// someone registered, or null if it's a genuinely new face.
-async function findDuplicateFace(newEmbedding, { excludeEmployeeId } = {}) {
-  const filter = { isActive: true, faceEmbedding: { $exists: true, $not: { $size: 0 } } };
+  const filter = {
+    status: { $in: statuses },
+    faceEmbeddings: { $exists: true, $not: { $size: 0 } },
+  };
   if (excludeEmployeeId) filter._id = { $ne: excludeEmployeeId };
 
-  const existingEmployees = await Employee.find(filter).select('faceEmbedding name employeeId');
-  if (existingEmployees.length === 0) return null;
+  const existing = await Employee.find(filter).select('faceEmbeddings name employeeId status');
+  if (existing.length === 0) return null;
 
   const candidates = {};
-  existingEmployees.forEach(emp => { candidates[emp._id.toString()] = emp.faceEmbedding; });
+  for (const emp of existing) candidates[emp._id.toString()] = emp.faceEmbeddings;
 
-  const { data } = await axios.post(`${ML_SERVICE_URL}/recognize-face`, { embedding: newEmbedding, candidates }, { timeout: 5000 });
-  if (!data.match) return null;
+  // Enrolment uses a *looser* margin than clock-in on purpose. At clock-in an
+  // ambiguous result must be refused (crediting the wrong person's hours is
+  // unrecoverable). Here, ambiguity is itself the signal worth acting on — a
+  // near-match to an existing profile is exactly what we want to catch, so
+  // requiring a clear margin would let the duplicate through.
+  const result = await ml.recognise(newEmbedding, candidates, { minMargin: 0 });
+  if (!result || !result.match || !result.matched_id) return null;
 
-  return existingEmployees.find(emp => emp._id.toString() === data.matched_id) || null;
+  const employee = existing.find(emp => emp._id.toString() === result.matched_id);
+  if (!employee) return null;
+
+  return { employee, confidence: result.confidence };
 }
 
 module.exports = { findDuplicateFace };

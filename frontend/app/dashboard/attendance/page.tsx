@@ -7,8 +7,9 @@ import { useToast } from '@/hooks/use-toast';
 
 interface AttendanceLog {
   _id: string;
-  employee: { _id: string; name: string; employeeId: string } | null;
+  employee: { _id: string; name: string; employeeId: string; status?: string } | null;
   date: string;
+  sessionNumber?: number;
   siteName: string | null;
   clockInTime: string;
   clockOutTime?: string;
@@ -24,6 +25,24 @@ function toLocalInputValue(iso?: string) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// The employee lifecycle status shown per row — separate from the
+// per-scan attendance status (VALID/LATE/etc.) in the "Status" column.
+// A pending employee clocks in and shows up here like anyone else; this
+// badge is purely "has HR confirmed this person yet", the flag that has to
+// be clear before payroll is run from this data.
+const EMPLOYEE_STATUS_LABEL: Record<string, string> = {
+  ACTIVE: 'Approved',
+  PENDING_APPROVAL: 'Pending',
+  INACTIVE: 'Inactive',
+  REJECTED: 'Rejected',
+};
+const EMPLOYEE_STATUS_BADGE: Record<string, string> = {
+  ACTIVE: 'badge-success',
+  PENDING_APPROVAL: 'badge-warning',
+  INACTIVE: 'bg-surface-elevated text-text-tertiary border border-border',
+  REJECTED: 'badge-danger',
+};
+
 export default function AttendancePage() {
   const { toast } = useToast();
   const [logs, setLogs] = useState<AttendanceLog[]>([]);
@@ -31,15 +50,16 @@ export default function AttendancePage() {
   const [error, setError] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [statusFilter, setStatusFilter] = useState('');
+  const [approvedOnly, setApprovedOnly] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState({ clockInTime: '', clockOutTime: '' });
+  const [editForm, setEditForm] = useState({ clockInTime: '', clockOutTime: '', reason: '' });
   const [saving, setSaving] = useState(false);
 
   const handleExport = async () => {
     setExporting(true);
     try {
-      await api.exportAttendance(selectedDate, selectedDate, `attendance_${selectedDate}.csv`);
+      await api.exportAttendance(selectedDate, selectedDate, `attendance_${selectedDate}.csv`, approvedOnly);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Export failed');
     } finally {
@@ -50,7 +70,7 @@ export default function AttendancePage() {
   const fetchLogs = async () => {
     setLoading(true);
     try {
-      const data = await api.getAttendance({ date: selectedDate, status: statusFilter || undefined, limit: 200 });
+      const data = await api.getAttendance({ date: selectedDate, status: statusFilter || undefined, limit: 200, approvedOnly });
       setLogs(data);
       setError(null);
     } catch (err) {
@@ -60,16 +80,20 @@ export default function AttendancePage() {
     }
   };
 
-  useEffect(() => { fetchLogs(); }, [selectedDate, statusFilter]);
+  useEffect(() => { fetchLogs(); }, [selectedDate, statusFilter, approvedOnly]);
 
   const startEdit = (log: AttendanceLog) => {
     setEditingId(log._id);
-    setEditForm({ clockInTime: toLocalInputValue(log.clockInTime), clockOutTime: toLocalInputValue(log.clockOutTime) });
+    setEditForm({ clockInTime: toLocalInputValue(log.clockInTime), clockOutTime: toLocalInputValue(log.clockOutTime), reason: '' });
   };
 
   const saveEdit = async (log: AttendanceLog) => {
     if (!editForm.clockInTime) {
       toast({ variant: 'destructive', title: 'A clock-in time is required.' });
+      return;
+    }
+    if (!editForm.reason.trim()) {
+      toast({ variant: 'destructive', title: 'Please explain why this record is being corrected.' });
       return;
     }
     if (!log.employee) return;
@@ -78,8 +102,10 @@ export default function AttendancePage() {
       await api.manualAttendanceEdit({
         employeeId: log.employee._id,
         date: log.date,
+        sessionNumber: log.sessionNumber,
         clockInTime: new Date(editForm.clockInTime).toISOString(),
         clockOutTime: editForm.clockOutTime ? new Date(editForm.clockOutTime).toISOString() : undefined,
+        reason: editForm.reason.trim(),
       });
       setEditingId(null);
       toast({ title: 'Attendance record updated' });
@@ -99,12 +125,17 @@ export default function AttendancePage() {
     SPOOF_ATTEMPT: 'badge-danger',
   };
 
+  const pendingCount = logs.filter(l => l.employee?.status === 'PENDING_APPROVAL').length;
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-text-primary text-display">Attendance Logs</h1>
-          <p className="text-text-secondary">{logs.length} records for {selectedDate}</p>
+          <p className="text-text-secondary">
+            {logs.length} records for {selectedDate}
+            {pendingCount > 0 && <span className="text-warning"> · {pendingCount} from employees still pending HR approval</span>}
+          </p>
         </div>
         <button
           onClick={handleExport}
@@ -116,7 +147,7 @@ export default function AttendancePage() {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <div>
           <label htmlFor="attendance-date" className="sr-only">Date</label>
           <input
@@ -142,7 +173,20 @@ export default function AttendancePage() {
             <option value="LOCATION_MISMATCH">Location Mismatch</option>
           </select>
         </div>
+        <label className="flex items-center gap-2 text-sm text-text-secondary px-3 py-2 rounded-lg border border-border bg-surface-elevated cursor-pointer">
+          <input
+            type="checkbox"
+            checked={approvedOnly}
+            onChange={e => setApprovedOnly(e.target.checked)}
+            className="accent-accent"
+          />
+          Approved employees only
+        </label>
       </div>
+      <p className="text-xs text-text-tertiary -mt-3">
+        Attendance is recorded from an employee's first scan, before HR approves them — check &quot;Approved employees only&quot;
+        when building a payroll export so pending registrations aren&apos;t included by mistake.
+      </p>
 
       {error && <div className="badge-danger rounded-lg p-4"><p className="text-sm">{error}</p></div>}
 
@@ -153,17 +197,24 @@ export default function AttendancePage() {
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead><tr className="border-b border-border">
-                {['Employee', 'ID', 'Site', 'Clock In', 'Clock Out', 'Hours', 'Status', 'Confidence', 'Actions'].map(h => (
+                {['Employee', 'ID', 'Employee Status', 'Site', 'Clock In', 'Clock Out', 'Hours', 'Status', 'Confidence', 'Actions'].map(h => (
                   <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-text-tertiary uppercase tracking-wider">{h}</th>
                 ))}
               </tr></thead>
               <tbody className="divide-y divide-border-subtle">
                 {logs.length === 0 ? (
-                  <tr><td colSpan={9} className="text-center py-12 text-text-tertiary">No attendance records for this date</td></tr>
+                  <tr><td colSpan={10} className="text-center py-12 text-text-tertiary">No attendance records for this date</td></tr>
                 ) : logs.map(log => (
                   <tr key={log._id} className="hover:bg-surface-elevated transition-all duration-200 ease-out">
                     <td className="px-4 py-3 text-text-primary font-medium text-sm">{log.employee?.name || 'Unknown'}</td>
                     <td className="px-4 py-3 text-accent text-mono text-sm">{log.employee?.employeeId || '–'}</td>
+                    <td className="px-4 py-3">
+                      {log.employee?.status ? (
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${EMPLOYEE_STATUS_BADGE[log.employee.status] || 'badge-accent'}`}>
+                          {EMPLOYEE_STATUS_LABEL[log.employee.status] || log.employee.status}
+                        </span>
+                      ) : '–'}
+                    </td>
                     <td className="px-4 py-3 text-text-secondary text-xs">{log.siteName || '–'}</td>
                     {editingId === log._id ? (
                       <>
@@ -175,7 +226,15 @@ export default function AttendancePage() {
                           <input type="datetime-local" value={editForm.clockOutTime} onChange={e => setEditForm(f => ({ ...f, clockOutTime: e.target.value }))}
                             className="input-base px-2 py-1 text-xs w-40" />
                         </td>
-                        <td colSpan={3} className="px-4 py-3 text-text-tertiary text-xs">Manual correction</td>
+                        <td colSpan={3} className="px-4 py-2">
+                          <input
+                            type="text"
+                            value={editForm.reason}
+                            onChange={e => setEditForm(f => ({ ...f, reason: e.target.value }))}
+                            placeholder="Reason for correction (required)"
+                            className="input-base px-2 py-1 text-xs w-full"
+                          />
+                        </td>
                         <td className="px-4 py-3">
                           <div className="flex gap-2">
                             <button onClick={() => saveEdit(log)} disabled={saving} className="p-1.5 badge-success rounded"><Check size={14} /></button>

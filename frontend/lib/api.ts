@@ -1,6 +1,7 @@
 import type {
   Site, Shift, Service, Contractor, Employee, DashboardUser,
   AttendanceLog, SpoofAttempt, RegularizationRequest, DashboardStats, TrendPoint,
+  LeaveRequest, LeaveType, Holiday, AuditEntry,
 } from './types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
@@ -106,7 +107,11 @@ async function logout(): Promise<void> {
 export const api = {
   // Auth
   login: async (email: string, password: string) => {
-    const result = await apiRequest<{ token: string; user: { id: string; name: string; email: string; role: string } }>('/api/auth/login', {
+    const result = await apiRequest<{
+      token: string;
+      mustChangePassword?: boolean;
+      user: { id: string; name: string; email: string; role: string };
+    }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
@@ -116,12 +121,30 @@ export const api = {
   },
   logout,
 
+  changePassword: (currentPassword: string, newPassword: string) =>
+    apiRequest<{ success: boolean; token: string }>('/api/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, newPassword }),
+    }).then(result => {
+      // Re-issued after a password change — keep the client's stored token
+      // in sync so the very next request isn't sent with the old one.
+      setAuthToken(result.token);
+      return result;
+    }),
+
   getMe: () => apiRequest<{ name: string; email: string; role: string; workLocation?: { _id: string; name: string } | null }>('/api/auth/me'),
 
   // Dashboard user management (admin only)
   getUsers: () => apiRequest<DashboardUser[]>('/api/auth/users'),
-  createUser: (data: { name: string; email: string; password: string; role: string; workLocation?: string | null }) =>
-    apiRequest<{ success: boolean; user: DashboardUser }>('/api/auth/users', { method: 'POST', body: JSON.stringify(data) }),
+  // password is optional — omit it and the backend generates a strong
+  // one-time password (returned as temporaryPassword) that must be changed
+  // at first login, rather than an admin having to invent one.
+  createUser: (data: { name: string; email: string; password?: string; role: string; workLocation?: string | null }) =>
+    apiRequest<{ success: boolean; temporaryPassword?: string; mustChangePassword: boolean; user: DashboardUser }>(
+      '/api/auth/users', { method: 'POST', body: JSON.stringify(data) }
+    ),
+  resetUserPassword: (id: string) =>
+    apiRequest<{ success: boolean; temporaryPassword: string; message: string }>(`/api/auth/users/${id}/reset-password`, { method: 'POST' }),
   deactivateUser: (id: string) => apiRequest<{ success: boolean }>(`/api/auth/users/${id}`, { method: 'DELETE' }),
 
   // Dashboard Stats
@@ -130,7 +153,35 @@ export const api = {
   getTrend: (days = 7) => apiRequest<TrendPoint[]>(`/api/v1/dashboard/trend?days=${days}`),
 
   // Employees
-  getEmployees: () => apiRequest<Employee[]>('/api/v1/employees'),
+  //
+  // The backend now paginates this list (it used to return the entire roster
+  // unbounded, which times out as headcount grows). Requesting a large page
+  // size and unwrapping `.employees` here keeps every existing caller's
+  // "just gives me an array" contract intact without touching each page;
+  // callers that want real pagination can use getEmployeesPage below.
+  getEmployees: () =>
+    apiRequest<{ employees: Employee[]; pagination: { total: number } }>('/api/v1/employees?limit=200')
+      .then(r => r.employees),
+  getEmployeesPage: (params?: { page?: number; limit?: number; status?: string; search?: string; workLocation?: string; unassignedOnly?: boolean }) => {
+    const q = new URLSearchParams();
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    if (params?.status) q.set('status', params.status);
+    if (params?.search) q.set('search', params.search);
+    if (params?.workLocation) q.set('workLocation', params.workLocation);
+    if (params?.unassignedOnly) q.set('unassignedOnly', 'true');
+    return apiRequest<{ employees: Employee[]; pagination: { page: number; limit: number; total: number; pages: number } }>(
+      `/api/v1/employees${q.toString() ? '?' + q.toString() : ''}`
+    );
+  },
+  getEmployeeCounts: () =>
+    apiRequest<{ active: number; pending: number; inactive: number; unassigned: number; noBiometrics: number }>('/api/v1/employees/counts'),
+  approveEmployee: (id: string, data?: { workLocation?: string; shiftTemplate?: string }) =>
+    apiRequest<{ success: boolean; message: string }>(`/api/v1/employees/${id}/approve`, { method: 'POST', body: JSON.stringify(data || {}) }),
+  rejectEmployee: (id: string, reason: string) =>
+    apiRequest<{ success: boolean; message: string }>(`/api/v1/employees/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  reactivateEmployee: (id: string, workLocation?: string) =>
+    apiRequest<{ success: boolean; needsFaceReenrolment: boolean; message: string }>(`/api/v1/employees/${id}/reactivate`, { method: 'POST', body: JSON.stringify({ workLocation }) }),
   getEmployee: (id: string) => apiRequest<Employee>(`/api/v1/employees/${id}`),
   updateEmployee: (id: string, data: Partial<Pick<Employee, 'name'>> & { workLocation?: string | null; shiftTemplate?: string | null; serviceTag?: string | null; contractor?: string | null }) =>
     apiRequest<{ success: boolean; employee: Employee }>(`/api/v1/employees/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
@@ -188,28 +239,80 @@ export const api = {
   reviewRegularizationRequest: (id: string, status: 'APPROVED' | 'REJECTED', reviewNote?: string) =>
     apiRequest<{ success: boolean; request: RegularizationRequest }>(`/api/v1/regularization/${id}`, { method: 'PUT', body: JSON.stringify({ status, reviewNote }) }),
 
-  // Manual attendance correction
-  manualAttendanceEdit: (data: { employeeId: string; date: string; clockInTime: string; clockOutTime?: string; notes?: string }) =>
+  // Manual attendance correction. `reason` is required by the backend — it's
+  // what makes the audit trail (who changed this record, and why) actually
+  // useful when an employee disputes their hours.
+  manualAttendanceEdit: (data: { employeeId: string; date: string; sessionNumber?: number; clockInTime: string; clockOutTime?: string; notes?: string; reason: string }) =>
     apiRequest<{ success: boolean; log: AttendanceLog }>('/api/v1/attendance/manual', { method: 'PUT', body: JSON.stringify(data) }),
 
-  // Attendance
-  getAttendance: (params?: { date?: string; employeeId?: string; status?: string; limit?: number }) => {
+  // Supervisor override — marks someone present/departed when face scanning
+  // genuinely cannot be used (bad light, camera failure, a covered face).
+  overrideAttendance: (data: { employeeId: string; action: 'CLOCK_IN' | 'CLOCK_OUT'; reason: string; at?: string }) =>
+    apiRequest<{ success: boolean; message: string; overridesUsedThisMonth: number; overrideLimit: number }>(
+      '/api/v1/attendance/override', { method: 'POST', body: JSON.stringify(data) }
+    ),
+
+  // Attendance — same unwrap-the-pagination pattern as getEmployees.
+  // `approvedOnly` restricts to employees HR has confirmed — attendance
+  // itself is never gated on approval (a pending employee shows up here from
+  // day one), this only matters when building an actual payroll view.
+  getAttendance: (params?: { date?: string; startDate?: string; endDate?: string; employeeId?: string; status?: string; limit?: number; approvedOnly?: boolean }) => {
     const searchParams = new URLSearchParams();
     if (params?.date) searchParams.set('date', params.date);
+    if (params?.startDate) searchParams.set('startDate', params.startDate);
+    if (params?.endDate) searchParams.set('endDate', params.endDate);
     if (params?.employeeId) searchParams.set('employeeId', params.employeeId);
     if (params?.status) searchParams.set('status', params.status);
-    if (params?.limit) searchParams.set('limit', String(params.limit));
-    const query = searchParams.toString();
-    return apiRequest<AttendanceLog[]>(`/api/v1/attendance${query ? '?' + query : ''}`);
+    if (params?.approvedOnly) searchParams.set('approvedOnly', 'true');
+    searchParams.set('limit', String(params?.limit || 200));
+    return apiRequest<{ logs: AttendanceLog[]; pagination: { total: number } }>(`/api/v1/attendance?${searchParams.toString()}`)
+      .then(r => r.logs);
   },
   getTodayAttendance: () => apiRequest<AttendanceLog[]>('/api/v1/attendance/today'),
+  getAttendanceSummary: (startDate: string, endDate: string) =>
+    apiRequest<Array<{ employee: string; name: string; employeeCode: string; daysPresent: number; totalHours: number; regularHours: number; overtimeHours: number; lateCount: number }>>(
+      `/api/v1/attendance/summary?startDate=${startDate}&endDate=${endDate}`
+    ),
+  getAttendanceAnomalies: (days = 7) =>
+    apiRequest<Record<string, unknown>>(`/api/v1/attendance/anomalies?days=${days}`),
+
+  // Leave
+  getLeaveRequests: (status?: string) =>
+    apiRequest<LeaveRequest[]>(`/api/v1/leave${status ? `?status=${status}` : ''}`),
+  reviewLeaveRequest: (id: string, status: 'APPROVED' | 'REJECTED', reviewNote?: string) =>
+    apiRequest<{ success: boolean; request: LeaveRequest }>(`/api/v1/leave/${id}`, { method: 'PUT', body: JSON.stringify({ status, reviewNote }) }),
+  createLeaveForEmployee: (data: { employeeId: string; leaveType: LeaveType; fromDate: string; toDate: string; reason: string }) =>
+    apiRequest<{ success: boolean; request: LeaveRequest }>('/api/v1/leave/dashboard', { method: 'POST', body: JSON.stringify(data) }),
+  cancelLeaveRequest: (id: string) => apiRequest<{ success: boolean }>(`/api/v1/leave/${id}`, { method: 'DELETE' }),
+
+  // Holidays
+  getHolidays: (year?: number) => apiRequest<Holiday[]>(`/api/v1/holidays${year ? `?year=${year}` : ''}`),
+  createHoliday: (data: { date: string; name: string; workLocations?: string[]; isPaid?: boolean }) =>
+    apiRequest<Holiday>('/api/v1/holidays', { method: 'POST', body: JSON.stringify(data) }),
+  deleteHoliday: (id: string) => apiRequest<{ success: boolean }>(`/api/v1/holidays/${id}`, { method: 'DELETE' }),
+
+  // Audit trail (admin only)
+  getAuditLog: (params?: { page?: number; limit?: number; action?: string; targetModel?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    if (params?.action) q.set('action', params.action);
+    if (params?.targetModel) q.set('targetModel', params.targetModel);
+    return apiRequest<{ entries: AuditEntry[]; pagination: { page: number; limit: number; total: number; pages: number } }>(
+      `/api/v1/audit${q.toString() ? '?' + q.toString() : ''}`
+    );
+  },
 
   // Export requires auth, so it's a real fetch (not a bare <a href>) carrying
   // the session cookie, then triggers the browser download itself.
-  exportAttendance: async (startDate?: string, endDate?: string, filename = 'attendance.csv') => {
+  // `approvedOnly` is the "before putting salary" filter — leave it off to
+  // export everyone (with an Employee Status column showing who's pending),
+  // turn it on to build a sheet limited to HR-confirmed employees.
+  exportAttendance: async (startDate?: string, endDate?: string, filename = 'attendance.csv', approvedOnly = false) => {
     const params = new URLSearchParams();
     if (startDate) params.set('startDate', startDate);
     if (endDate) params.set('endDate', endDate);
+    if (approvedOnly) params.set('approvedOnly', 'true');
     const token = getAuthToken();
     const res = await fetch(`${API_BASE}/api/v1/attendance/export${params.toString() ? '?' + params.toString() : ''}`, {
       credentials: 'include',
