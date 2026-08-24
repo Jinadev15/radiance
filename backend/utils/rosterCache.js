@@ -104,9 +104,29 @@ async function sync({ force = false } = {}) {
       lastStaleModelCount = staleModel;
 
       const nextVersion = computeVersion(rows, activeModel || '');
-      if (!force && nextVersion === currentVersion) {
+
+      // Skipping is only safe when the ML service actually still holds this
+      // version. Comparing our freshly-computed version against our own last
+      // one answers "did the roster change?", not "does the cache still
+      // exist" — and the ML service loses its in-memory cache on every
+      // restart (a redeploy, a cold start, an OOM). Without this check the
+      // periodic reconciler would compute an unchanged version, skip, and
+      // leave the cache empty until someone happened to scan.
+      const remoteVersion = health && health.embedding_cache
+        ? health.embedding_cache.version
+        : undefined;
+      const remoteMatches = remoteVersion === undefined || remoteVersion === nextVersion;
+
+      if (!force && nextVersion === currentVersion && remoteMatches) {
         lastSyncAt = new Date();
         return { skipped: true, version: currentVersion, people: rows.length };
+      }
+
+      if (!remoteMatches && nextVersion === currentVersion) {
+        console.log(
+          `[RosterCache] ML service is holding "${remoteVersion}" but should hold ` +
+          `"${nextVersion}" — it likely restarted. Re-pushing the roster.`
+        );
       }
 
       const payload = {
