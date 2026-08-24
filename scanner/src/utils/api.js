@@ -1,24 +1,17 @@
 import { enqueue, isNetworkError, queueLength } from './offlineQueue';
+import { deviceHeaders, kioskSiteId } from './device';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
 // Identifies this device to the backend (see backend/middleware/kiosk.js).
-// Set per-deployment via the scanner's build env — VITE_KIOSK_TOKEN is the
-// device's shared secret, VITE_KIOSK_SITE_ID is which site it belongs to
-// (used to scope face-matching candidates and, once set, to pre-fill/lock
-// the site on this kiosk's own registration form).
+// Credentials come from this device's own storage, provisioned once via a
+// setup link — deliberately NOT from a VITE_ variable, which Vite would
+// inline into the bundle and ship to every visitor. See utils/device.js.
 function kioskHeaders() {
-  const headers = { 'Content-Type': 'application/json' };
-  const token = import.meta.env.VITE_KIOSK_TOKEN;
-  const site = import.meta.env.VITE_KIOSK_SITE_ID;
-  if (token) headers['X-Kiosk-Token'] = token;
-  if (site) headers['X-Kiosk-Site'] = site;
-  return headers;
+  return { 'Content-Type': 'application/json', ...deviceHeaders() };
 }
 
-export function kioskSiteId() {
-  return import.meta.env.VITE_KIOSK_SITE_ID || null;
-}
+export { kioskSiteId };
 
 // Note on the offline path: queuing stores the raw scan and replays it once
 // connectivity returns — actual face match / liveness / geofence verification

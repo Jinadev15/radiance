@@ -7,8 +7,10 @@ import FaceCapture from './components/FaceCapture';
 import ProcessingScreen from './components/ProcessingScreen';
 import ResultScreen from './components/ResultScreen';
 import MyAttendanceScreen from './components/MyAttendanceScreen';
+import DeviceSetupScreen from './components/DeviceSetupScreen';
 import { clockIn, clockOut, registerEmployee, fetchMyAttendance, reportIssue } from './utils/api';
 import { startAutoSync, queueLength } from './utils/offlineQueue';
+import { provisionFromUrl, isProvisioned } from './utils/device';
 
 const STATES = {
   LANDING: 'LANDING',
@@ -22,6 +24,15 @@ const STATES = {
 };
 
 function App() {
+  // Consume a ?setup=<token>&site=<id> link before anything else, so a freshly
+  // provisioned tablet works on its very first load. Runs during the initial
+  // render rather than in an effect: the offline-sync effect below fires an
+  // immediate request, and it must already carry this device's credentials.
+  const [provisioned] = useState(() => {
+    provisionFromUrl();
+    return isProvisioned();
+  });
+
   const [currentScreen, setCurrentScreen] = useState(STATES.LANDING);
   const [userType, setUserType] = useState(null); // 'existing' | 'new'
   const [actionType, setActionType] = useState(null); // 'clock-in' | 'clock-out' | 'register' | 'my-attendance' | 'report-issue'
@@ -129,6 +140,10 @@ function App() {
     if (actionType === 'report-issue') return setCurrentScreen(STATES.REPORT_ISSUE);
     return setCurrentScreen(STATES.ACTION_CHOICE);
   };
+
+  // An unprovisioned device shows nothing but the setup notice — no site
+  // list, no registration form, no scanning.
+  if (!provisioned) return <DeviceSetupScreen />;
 
   return (
     <div className="app-container">

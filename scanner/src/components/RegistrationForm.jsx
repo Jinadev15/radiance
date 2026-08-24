@@ -8,7 +8,7 @@ import { fetchSites, kioskSiteId } from '../utils/api';
 // was wrapped in `if (employee.workLocation)`, so a missing site silently
 // disabled the location check entirely rather than blocking anything. Every
 // self-registered employee could clock in from anywhere. If this kiosk is
-// bound to a site via VITE_KIOSK_SITE_ID, that site is used automatically
+// provisioned with a site (see utils/device.js), that site is used automatically
 // and the picker is skipped — a kiosk lives at a site, it shouldn't have to
 // ask.
 export default function RegistrationForm({ onSubmit, onBack }) {

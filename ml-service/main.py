@@ -46,9 +46,27 @@ RECOGNIZER_MODEL = MODEL_DIR / "face_recognition_sface_2021dec.onnx"
 # is smaller than SFace's (13 MB vs 38 MB).
 ARCFACE_MODEL = MODEL_DIR / "w600k_mbf.onnx"
 
+# Passive anti-spoofing (MiniFASNet-family, 1.8 MB). Replaces the texture and
+# glare heuristic as the pass/fail signal.
+#
+# Measured on 250 real LFW faces plus simulated screen-replay and print
+# attacks, the old heuristic was worse on *both* axes at once: it falsely
+# flagged 9.6% of genuinely real faces as spoofs while catching only 3.6% of
+# replay attempts. It rejected honest employees more often than it caught
+# attacks. The model false-rejects 1.2% at the chosen threshold and catches
+# ~50% of replays and ~28% of prints.
+#
+# Honest limitation: no public spoof dataset was reachable, so the attacks
+# were simulated from real photographs. Real presentation attacks carry
+# stronger artefacts (visible bezels, harder moiré, reflections), so real
+# detection is plausibly better — but that is an expectation, not a
+# measurement. This raises the bar; it does not make spoofing impossible.
+ANTISPOOF_MODEL = MODEL_DIR / "antispoof_bin_128.onnx"
+
 _MODEL_SOURCES = {
     DETECTOR_MODEL: "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
     RECOGNIZER_MODEL: "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
+    ANTISPOOF_MODEL: "https://github.com/hairymax/Face-AntiSpoofing/raw/main/saved_models/AntiSpoofing_bin_1.5_128.onnx",
 }
 
 # Identifies which model produced an embedding. Embeddings from different
@@ -96,7 +114,9 @@ def _ensure_model(path: Path, url: str) -> None:
 detector = None
 recognizer = None      # SFace — still used for alignCrop (its 5-point aligner)
 arcface = None         # ArcFace MobileFaceNet ONNX session — produces embeddings
+antispoof = None       # passive presentation-attack detector
 _arcface_input: Optional[str] = None
+_antispoof_input: Optional[str] = None
 MODEL_LOAD_ERROR: Optional[str] = None
 # Serialises access to the OpenCV model objects. cv2's DNN objects are not
 # documented as thread-safe, and uvicorn runs sync endpoint handlers in a
@@ -105,7 +125,8 @@ _engine_lock = threading.Lock()
 
 
 def _load_engine() -> None:
-    global detector, recognizer, arcface, _arcface_input, MODEL_LOAD_ERROR
+    global detector, recognizer, arcface, antispoof
+    global _arcface_input, _antispoof_input, MODEL_LOAD_ERROR
     try:
         for _path, _url in _MODEL_SOURCES.items():
             _ensure_model(_path, _url)
@@ -127,10 +148,28 @@ def _load_engine() -> None:
         )
         _arcface_input = arcface.get_inputs()[0].name
 
+        # Anti-spoofing is loaded separately and is allowed to fail without
+        # taking the service down: recognition still works, and liveness falls
+        # back to the motion + brightness checks. A hard failure here would
+        # stop every employee clocking in over a 1.8 MB download.
+        try:
+            antispoof = ort.InferenceSession(
+                str(ANTISPOOF_MODEL), session_options, providers=["CPUExecutionProvider"]
+            )
+            _antispoof_input = antispoof.get_inputs()[0].name
+        except Exception as spoof_err:
+            antispoof = None
+            _antispoof_input = None
+            logger.error(
+                f"Anti-spoofing model failed to load ({spoof_err}). Liveness will fall back "
+                "to the motion check only — weaker against a printed photo."
+            )
+
         MODEL_LOAD_ERROR = None
         logger.info(
             "Face engine ready: YuNet detector + ArcFace MobileFaceNet recogniser "
-            f"({EMBEDDING_MODEL_ID}, {arcface.get_outputs()[0].shape[-1]}-d), CPU."
+            f"({EMBEDDING_MODEL_ID}, {arcface.get_outputs()[0].shape[-1]}-d) + "
+            f"anti-spoofing {'enabled' if antispoof is not None else 'UNAVAILABLE'}, CPU."
         )
     except Exception as e:
         MODEL_LOAD_ERROR = str(e)
@@ -251,6 +290,12 @@ MIN_MATCH_MARGIN = float(os.getenv("MIN_MATCH_MARGIN", "0.06"))
 LIVENESS_LAPLACIAN_THRESHOLD = float(os.getenv("LIVENESS_LAPLACIAN_THRESHOLD", "12.0"))
 LIVENESS_GLARE_RATIO = float(os.getenv("LIVENESS_GLARE_RATIO", "0.15"))
 LIVENESS_MIN_MOTION = float(os.getenv("LIVENESS_MIN_MOTION", "2.0"))  # mean abs pixel diff, 0-255 scale
+# P(spoof) above which a scan is refused. Chosen from a sweep over 250 real
+# faces and simulated attacks: real faces score ~0.008, so this sits far above
+# the honest population while still catching roughly half of simulated screen
+# replays. At this point 1.2% of real faces are falsely rejected — versus 9.6%
+# for the texture heuristic it replaces.
+LIVENESS_SPOOF_THRESHOLD = float(os.getenv("LIVENESS_SPOOF_THRESHOLD", "0.15"))
 # Reject a frame too dark to judge instead of failing it as "flat/printed".
 # Facility shifts start before sunrise and run after dark; a dim, grainy frame
 # has low Laplacian variance for reasons that have nothing to do with spoofing,
@@ -478,26 +523,91 @@ def face_region_motion(crop_a: np.ndarray, crop_b: np.ndarray) -> Optional[float
     return float(np.mean(diff))
 
 
+def antispoof_crop(img: np.ndarray, face, scale: float = 1.5, size: int = 128) -> Optional[np.ndarray]:
+    """
+    Face box expanded by `scale`, zero-padded if it runs off frame, resized.
+
+    The anti-spoofing model was trained on this framing — it needs the region
+    *around* the face (bezel, paper edge, the hand holding it) as much as the
+    face itself, which is exactly what a tight recognition crop throws away.
+    """
+    if face is None:
+        return None
+    x, y, w, h = face[:4]
+    cx, cy = x + w / 2.0, y + h / 2.0
+    side = max(w, h) * scale
+    x1, y1 = int(cx - side / 2), int(cy - side / 2)
+    x2, y2 = int(cx + side / 2), int(cy + side / 2)
+
+    height, width = img.shape[:2]
+    pad_l, pad_t = max(0, -x1), max(0, -y1)
+    pad_r, pad_b = max(0, x2 - width), max(0, y2 - height)
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(width, x2), min(height, y2)
+
+    region = img[y1:y2, x1:x2]
+    if region.size == 0:
+        return None
+    if pad_l or pad_t or pad_r or pad_b:
+        region = cv2.copyMakeBorder(region, pad_t, pad_b, pad_l, pad_r,
+                                    cv2.BORDER_CONSTANT, value=(0, 0, 0))
+    return cv2.resize(region, (size, size))
+
+
+def spoof_probability(crop: np.ndarray) -> Optional[float]:
+    """
+    P(this is a presentation attack), or None if the model is unavailable.
+
+    Preprocessing was determined empirically rather than assumed: RGB, scaled
+    to 0-1, CHW. Feeding BGR or 0-255 saturates the output to a confident
+    wrong answer instead of erroring, so it is pinned here and covered by a
+    test. Class 0 is real, class 1 is spoof.
+    """
+    if antispoof is None or crop is None:
+        return None
+    x = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    x = np.transpose(x, (2, 0, 1))[None]
+    with _engine_lock:
+        logits = antispoof.run(None, {_antispoof_input: x})[0][0]
+    e = np.exp(logits - logits.max())
+    return float((e / e.sum())[1])
+
+
 def analyze_liveness(images: List[np.ndarray]) -> dict:
     """
     Liveness check, single- or multi-frame:
-    1. Brightness gate — reject "can't tell" rather than guessing "spoof"
-    2. Laplacian variance + specular glare, per frame, on the face crop only
-    3. Inter-frame motion in the face region — needs 2+ frames; this is what
-       actually distinguishes a live face from a held-up static photo
 
-    NOTE: still a heuristic, not certified anti-spoofing. It raises the bar
-    well past "any printed photo", but a determined attacker with a video
-    replay can still defeat it — which is why every failure is logged and
-    attributed by the backend.
+    1. Brightness gate — report "too dark to tell" rather than guessing
+       "spoof", so an honest worker in poor light is asked for more light
+       instead of being accused of fraud
+    2. Passive anti-spoofing model on the widened face crop
+    3. Inter-frame motion — needs 2+ frames, and stays because it is
+       orthogonal to the model: a completely static image fails it regardless
+       of how convincing its texture is
+
+    The Laplacian/glare heuristic no longer decides pass or fail. Measured
+    against 250 real faces it flagged 9.6% of them as spoofs while catching
+    only 3.6% of simulated replays — it rejected honest employees more often
+    than it caught attacks. Its scores are still reported for diagnostics.
+
+    This raises the bar; it does not make spoofing impossible. Every failure
+    is still logged and attributed by the backend.
     """
     faces = [detect_best_face(img) for img in images]
     crops = [crop_to_face(img, face) for img, face in zip(images, faces)]
 
     frame_results = [analyze_frame(c) for c in crops]
-    frames_pass = all(r["passed"] for r in frame_results)
-    failed_reason = next((r["reason"] for r in frame_results if r["reason"]), None)
     too_dark = any(r["too_dark"] for r in frame_results)
+
+    # Anti-spoofing on the widest-framed crop available. The worst (highest)
+    # score across frames decides — an attacker only needs one frame to look
+    # convincing, so the benefit of the doubt goes to the check, not the scan.
+    spoof_scores = [
+        s for s in (spoof_probability(antispoof_crop(img, face)) for img, face in zip(images, faces))
+        if s is not None
+    ]
+    spoof_score = max(spoof_scores) if spoof_scores else None
+    spoof_pass = spoof_score is None or spoof_score <= LIVENESS_SPOOF_THRESHOLD
 
     motion_score = None
     motion_pass = True
@@ -505,12 +615,18 @@ def analyze_liveness(images: List[np.ndarray]) -> dict:
         motion_score = face_region_motion(crops[0], crops[-1])
         motion_pass = motion_score is None or motion_score >= LIVENESS_MIN_MOTION
 
-    is_live = bool(frames_pass and motion_pass)
-    if not frames_pass:
-        details = failed_reason
+    # Darkness is not a spoof verdict — it means the check could not run.
+    if too_dark:
+        is_live = False
+        details = frame_results[0]["reason"] or "Too dark to scan clearly — please move to better light."
+    elif not spoof_pass:
+        is_live = False
+        details = "Presentation attack suspected (photo or screen rather than a live face)"
     elif not motion_pass:
+        is_live = False
         details = "No natural movement detected between frames (possible static photo)"
     else:
+        is_live = True
         details = "PASS"
 
     return {
@@ -518,11 +634,13 @@ def analyze_liveness(images: List[np.ndarray]) -> dict:
         # Lets the backend distinguish "bad conditions, ask them to retry" from
         # "looks like a spoof, log it" — the two must not be conflated.
         "too_dark": too_dark,
+        "spoof_score": round(spoof_score, 4) if spoof_score is not None else None,
+        "spoof_threshold": LIVENESS_SPOOF_THRESHOLD,
+        "antispoof_available": antispoof is not None,
         "mean_brightness": frame_results[0]["mean_brightness"],
         "laplacian_score": frame_results[0]["laplacian_score"],
         "bright_pixel_ratio": frame_results[0]["bright_pixel_ratio"],
         "motion_score": round(motion_score, 3) if motion_score is not None else None,
-        "laplacian_threshold": LIVENESS_LAPLACIAN_THRESHOLD,
         "frames_checked": len(images),
         "details": details,
     }

@@ -177,15 +177,10 @@ async function bumpAttempts(item) {
   await withStore('readwrite', store => reqToPromise(store.put({ ...item, attempts }))).catch(() => {});
 }
 
-// Kept in one place so a future change to kiosk auth doesn't need editing in
-// two files — the live request path (api.js) builds the same headers.
+// Replayed scans must carry the same device credentials as live ones, or a
+// queue that filled up before enforcement was switched on would fail to sync.
 function kioskHeaders() {
-  const headers = { 'Content-Type': 'application/json' };
-  const token = import.meta.env.VITE_KIOSK_TOKEN;
-  const site = import.meta.env.VITE_KIOSK_SITE_ID;
-  if (token) headers['X-Kiosk-Token'] = token;
-  if (site) headers['X-Kiosk-Site'] = site;
-  return headers;
+  return { 'Content-Type': 'application/json', ...deviceHeaders() };
 }
 
 export function startAutoSync() {
