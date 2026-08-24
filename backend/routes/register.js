@@ -169,9 +169,9 @@ router.post('/',
       }
 
       // Extract the enrolment embedding.
-      let faceEmbedding;
+      let faceEmbedding, embeddingModel;
       try {
-        faceEmbedding = await ml.extractEmbedding(frames[0]);
+        ({ embedding: faceEmbedding, model: embeddingModel } = await ml.extractEmbedding(frames[0]));
       } catch (mlErr) {
         if (mlErr && mlErr.isServiceError) {
           return res.status(mlErr.status).json({ error: mlErr.error, code: mlErr.code });
@@ -230,6 +230,7 @@ router.post('/',
             nationalIdLast4,
             dateOfBirth,
             faceEmbeddings: [faceEmbedding],
+            embeddingModel,
             faceEnrolledAt: new Date(),
             faceEnrolledBy: createdBy,
             workLocation,

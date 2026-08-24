@@ -423,9 +423,9 @@ router.post('/:id/reenroll-face', auth, requireAdminOrHr,
         : (req.body.imageBase64 ? [req.body.imageBase64] : []);
       if (frames.length === 0) return res.status(400).json({ error: 'A face image is required' });
 
-      let embedding;
+      let embedding, embeddingModel;
       try {
-        embedding = await ml.extractEmbedding(frames[0]);
+        ({ embedding, model: embeddingModel } = await ml.extractEmbedding(frames[0]));
       } catch (mlErr) {
         if (mlErr && mlErr.isServiceError) return res.status(mlErr.status).json({ error: mlErr.error, code: mlErr.code });
         throw mlErr;
@@ -460,7 +460,11 @@ router.post('/:id/reenroll-face', auth, requireAdminOrHr,
         }
 
         const before = employee.faceEmbeddings.length;
-        if (req.body.replace) {
+        // Never append a vector from a different model to an existing set —
+        // best-of matching across incompatible spaces is meaningless. A model
+        // change forces a clean replace.
+        const modelChanged = employee.embeddingModel && employee.embeddingModel !== embeddingModel;
+        if (req.body.replace || modelChanged) {
           employee.faceEmbeddings = [embedding];
         } else {
           // Keep up to 5 captures per person: different angles and lighting
@@ -468,6 +472,7 @@ router.post('/:id/reenroll-face', auth, requireAdminOrHr,
           // being fatal. Oldest is dropped first.
           employee.faceEmbeddings = [...employee.faceEmbeddings, embedding].slice(-5);
         }
+        employee.embeddingModel = embeddingModel;
         employee.faceEnrolledAt = new Date();
         employee.faceEnrolledBy = req.user.id;
         employee.biometricsErasedAt = null;

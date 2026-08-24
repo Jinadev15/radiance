@@ -20,17 +20,23 @@ const ml = require('./mlServiceCall');
 // Version is derived from the roster's content, not a counter, so two backend
 // instances that see the same roster compute the same version and don't fight
 // over resyncing. Built from the fields that actually affect matching.
-function computeVersion(rows) {
+function computeVersion(rows, model = '') {
   const hash = crypto.createHash('sha1');
   // Sorted so map/query ordering can't change the version spuriously.
   const parts = rows
     .map(r => `${r._id}:${r.workLocation || ''}:${(r.faceEmbeddings || []).length}:${r.faceEnrolledAt ? new Date(r.faceEnrolledAt).getTime() : 0}`)
     .sort();
   for (const p of parts) hash.update(p).update('\n');
+  // The recognition model is part of a cache's identity. If the ML service
+  // comes back on a different model, every stored vector becomes incomparable
+  // and the cache must be rebuilt rather than reused — without this the
+  // version would look unchanged and the stale cache would be trusted.
+  hash.update(`|model=${model}`);
   return `${rows.length}-${hash.digest('hex').slice(0, 16)}`;
 }
 
 let currentVersion = null;
+let lastStaleModelCount = 0;
 let lastSyncAt = null;
 let lastSyncError = null;
 let syncInFlight = null;
@@ -46,6 +52,9 @@ function status() {
     lastSyncAt,
     lastSyncError,
     syncing: Boolean(syncInFlight),
+    // Employees enrolled under a superseded recognition model. Non-zero means
+    // those people cannot clock in until re-enrolled.
+    needsReenrolment: lastStaleModelCount,
   };
 }
 
@@ -69,11 +78,32 @@ async function sync({ force = false } = {}) {
       // .lean() matters here: hydrating 4,000 Mongoose documents with
       // embeddings costs several times the memory of the raw objects, and
       // nothing in this path needs document methods.
-      const rows = await Employee.find(Employee.matchableFilter())
-        .select('_id workLocation faceEmbeddings faceEnrolledAt')
+      // Ask the ML service which recognition model it is running, and only
+      // send embeddings produced by that same model. Mixing models does not
+      // error — it silently produces meaningless similarity scores — so the
+      // mismatch is filtered here and surfaced as a re-enrolment need.
+      const health = await ml.health();
+      const activeModel = health && health.embedding_model ? health.embedding_model : null;
+
+      const all = await Employee.find(Employee.matchableFilter())
+        .select('_id workLocation faceEmbeddings faceEnrolledAt embeddingModel')
         .lean();
 
-      const nextVersion = computeVersion(rows);
+      const rows = activeModel
+        ? all.filter(r => !r.embeddingModel || r.embeddingModel === activeModel)
+        : all;
+
+      const staleModel = all.length - rows.length;
+      if (staleModel > 0) {
+        console.warn(
+          `[RosterCache] ${staleModel} employee(s) were enrolled with a different ` +
+          `recognition model and are excluded from matching until re-enrolled ` +
+          `(service is running "${activeModel}").`
+        );
+      }
+      lastStaleModelCount = staleModel;
+
+      const nextVersion = computeVersion(rows, activeModel || '');
       if (!force && nextVersion === currentVersion) {
         lastSyncAt = new Date();
         return { skipped: true, version: currentVersion, people: rows.length };

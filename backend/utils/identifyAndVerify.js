@@ -59,7 +59,7 @@ async function identifyAndVerify(images, action, options = {}) {
 
   // 1. Turn the probe frame into an embedding. Throws NO_FACE with a
   //    user-facing message if the frame has no detectable face.
-  const embedding = await ml.extractEmbedding(images[0]);
+  const { embedding } = await ml.extractEmbedding(images[0]);
 
   // 2. Identify against the ML service's resident roster cache.
   //

@@ -66,6 +66,13 @@ const employeeSchema = new mongoose.Schema({
       message: 'Each face embedding must be 128 or 512 dimensions (max 10 per employee)'
     }
   },
+  // Which recognition model produced these embeddings. Vectors from
+  // different models are mathematically incompatible — comparing them
+  // yields meaningless similarity rather than an error — so the matcher
+  // only ever considers employees whose embeddings match the model the ML
+  // service is currently running, and anyone left behind is surfaced as
+  // needing re-enrolment instead of silently failing to match.
+  embeddingModel: { type: String, default: null, index: true },
   faceEnrolledAt: { type: Date, default: null },
   faceEnrolledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 

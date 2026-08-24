@@ -81,7 +81,17 @@ function translate(err, fallbackMessage) {
   return serviceError(503, fallbackMessage || 'Face recognition service unavailable.', 'ML_UNAVAILABLE');
 }
 
-/** Extract a face embedding from one base64 frame. Throws NO_FACE if none found. */
+/**
+ * Extract a face embedding from one base64 frame.
+ *
+ * Returns { embedding, model }. The model id travels with the vector because
+ * embeddings from different recognition models are mathematically
+ * incompatible — comparing across them produces meaningless similarity
+ * scores rather than an error — so every stored embedding records which
+ * model produced it and the two are never mixed.
+ *
+ * Throws NO_FACE if no face is found.
+ */
 async function extractEmbedding(image) {
   let data;
   try {
@@ -92,7 +102,7 @@ async function extractEmbedding(image) {
   if (!data || !data.face_detected || !Array.isArray(data.embedding) || data.embedding.length === 0) {
     throw serviceError(400, 'No face detected in the image. Please align your face clearly.', 'NO_FACE');
   }
-  return data.embedding;
+  return { embedding: data.embedding, model: data.embedding_model || null };
 }
 
 /**
