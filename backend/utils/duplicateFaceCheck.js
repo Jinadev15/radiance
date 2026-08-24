@@ -17,9 +17,12 @@ const ml = require('./mlServiceCall');
  *        deactivated profiles. A former employee's face reappearing is
  *        something HR needs to know about (it is either a rehire or an
  *        attempt to enrol a second profile), so the default is to look.
+ * @param {string|null} [options.embeddingModel]  the model that produced
+ *        `newEmbedding`. Only profiles enrolled under the same model are
+ *        compared — see below.
  * @returns {Promise<{employee: object, confidence: number}|null>}
  */
-async function findDuplicateFace(newEmbedding, { excludeEmployeeId, includeInactive = true } = {}) {
+async function findDuplicateFace(newEmbedding, { excludeEmployeeId, includeInactive = true, embeddingModel = null } = {}) {
   const statuses = includeInactive
     ? [Employee.STATUS.ACTIVE, Employee.STATUS.PENDING, Employee.STATUS.INACTIVE]
     : [Employee.STATUS.ACTIVE, Employee.STATUS.PENDING];
@@ -30,7 +33,20 @@ async function findDuplicateFace(newEmbedding, { excludeEmployeeId, includeInact
   };
   if (excludeEmployeeId) filter._id = { $ne: excludeEmployeeId };
 
-  const existing = await Employee.find(filter).select('faceEmbeddings name employeeId status');
+  // Only compare against embeddings from the same recognition model.
+  //
+  // Cosine similarity between vectors from two different models is not a
+  // small error, it is meaningless — and it fails in the dangerous direction
+  // here: an incomparable pair scores low, so a genuine duplicate looks like
+  // a new face and the "ghost profile" this check exists to block gets
+  // created. Profiles enrolled under a superseded model are skipped rather
+  // than silently mis-compared; they surface as needing re-enrolment
+  // (see rosterCache's needsReenrolment) instead.
+  if (embeddingModel) {
+    filter.embeddingModel = embeddingModel;
+  }
+
+  const existing = await Employee.find(filter).select('faceEmbeddings name employeeId status embeddingModel');
   if (existing.length === 0) return null;
 
   const candidates = {};

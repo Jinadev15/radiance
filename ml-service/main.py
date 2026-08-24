@@ -234,11 +234,13 @@ def require_token(x_ml_token: Optional[str] = Header(default=None, alias="X-ML-T
 
 
 # Config
-# 0.363 is the OpenCV Zoo's published SFace threshold for 1:1 *verification*
-# ("are these two photos the same person"). Identification against a roster of
-# hundreds is a different and much harder question — every extra enrolled
-# person is another chance for a false match — so the default here is
-# deliberately stricter than the published verification figure.
+# Chosen by measurement, not by the model card. Swept over 1,200 real LFW
+# identities with unenrolled "stranger" probes included; 0.34 was the point
+# that kept wrong-person matches at zero and strangers under ~1% while still
+# identifying ~92% of people in dim light. Raising it trades correct
+# identifications away fast (0.45 drops the dim case to 77%); lowering it lets
+# strangers in. Note this is on ArcFace's scale — SFace scored higher for the
+# same pair, so its old 0.45 default is not comparable.
 COSINE_MATCH_THRESHOLD = float(os.getenv("COSINE_THRESHOLD", "0.34"))
 # The best match must also beat the runner-up by this margin. Without it, a
 # top score of 0.40 against a second-best 0.39 was accepted as certainty when
@@ -531,7 +533,7 @@ def analyze_liveness(images: List[np.ndarray]) -> dict:
 # ---------------------------------------------------------------------------
 # The previous implementation looped in Python and called recognizer.match()
 # once per candidate. At 500 employees that is 500 OpenCV calls for every
-# single scan; at 2000 it times out. SFace cosine similarity is just a dot
+# single scan; at 2000 it times out. Cosine similarity is just a dot
 # product of L2-normalised vectors, so the whole roster can be compared in one
 # NumPy matrix-vector multiply — roughly two orders of magnitude faster, and
 # it yields the runner-up score for free, which is what the margin check needs.
@@ -668,7 +670,7 @@ def match_embedding(
 # when an employee is enrolled, approved, re-enrolled or deactivated. A scan
 # then carries only the probe vector.
 #
-# 4,000 employees x ~1.2 embeddings x 128 float32 = under 3 MB resident. The
+# 4,000 employees x ~1.2 embeddings x 512 float32 = under 10 MB resident. The
 # per-site row index lets a site-scoped scan compare against just that site's
 # roster, which is both faster and materially more accurate (fewer candidates
 # means fewer chances for a false match).

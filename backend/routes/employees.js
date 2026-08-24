@@ -449,7 +449,7 @@ router.post('/:id/reenroll-face', auth, requireAdminOrHr,
       // (`excludeEmployeeId` existed in the duplicate checker all along and
       // was never wired up to anything.)
       const result = await withLock('employee-face-enrolment', async () => {
-        const duplicate = await findDuplicateFace(embedding, { excludeEmployeeId: employee._id });
+        const duplicate = await findDuplicateFace(embedding, { excludeEmployeeId: employee._id, embeddingModel });
         if (duplicate) {
           throw {
             isServiceError: true,

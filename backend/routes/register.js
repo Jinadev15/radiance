@@ -219,7 +219,7 @@ router.post('/',
       let created;
       try {
         created = await withLock('employee-face-enrolment', async () => {
-          const duplicate = await findDuplicateFace(faceEmbedding);
+          const duplicate = await findDuplicateFace(faceEmbedding, { embeddingModel });
           if (duplicate) throw { isServiceError: true, ...duplicateMessage(duplicate) };
 
           const employee = new Employee({
