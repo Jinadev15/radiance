@@ -7,6 +7,7 @@ const { findDuplicateFace } = require('../utils/duplicateFaceCheck');
 const { withLock } = require('../utils/mongoLock');
 const ml = require('../utils/mlServiceCall');
 const audit = require('../utils/audit');
+const rosterCache = require('../utils/rosterCache');
 require('../models/WorkLocation');
 require('../models/ShiftTemplate');
 require('../models/ServiceTag');
@@ -221,6 +222,13 @@ router.put('/:id', auth,
         });
       }
 
+      // Reassigning someone to a different site changes which site's roster
+      // they're matched against at a kiosk, so the ML cache's per-site index
+      // has to be rebuilt. Other field edits don't affect matching.
+      if (changes && 'workLocation' in (changes.after || {})) {
+        rosterCache.invalidate('employee reassigned to a different site');
+      }
+
       res.json({ success: true, employee: toSafe(employee) });
     } catch (error) {
       console.error('[Employees/PUT]', error.message);
@@ -279,6 +287,11 @@ router.post('/:id/approve', auth, requireAdminOrHr,
         after: { status: employee.status, workLocation: String(employee.workLocation) },
       });
 
+      // The set of people who can be matched just changed — push it to the
+      // ML service's resident cache. Fire-and-forget; a scan that sees a
+      // stale version resyncs on its own.
+      rosterCache.invalidate('employee approved');
+
       res.json({ success: true, message: `${employee.name} approved and can now clock in.` });
     } catch (error) {
       console.error('[Employees/approve]', error.message);
@@ -314,6 +327,11 @@ router.post('/:id/reject', auth, requireAdminOrHr,
         after: { status: employee.status },
         reason: req.body.reason,
       });
+
+      // The set of people who can be matched just changed — push it to the
+      // ML service's resident cache. Fire-and-forget; a scan that sees a
+      // stale version resyncs on its own.
+      rosterCache.invalidate('employee rejected');
 
       res.json({ success: true, message: 'Registration rejected and biometric data erased.' });
     } catch (error) {
@@ -359,6 +377,11 @@ router.post('/:id/reactivate', auth, requireAdminOrHr,
         before: { status: previousStatus },
         after: { status: employee.status },
       });
+
+      // The set of people who can be matched just changed — push it to the
+      // ML service's resident cache. Fire-and-forget; a scan that sees a
+      // stale version resyncs on its own.
+      rosterCache.invalidate('employee reactivated');
 
       // Biometrics may have been erased under the retention policy while they
       // were away, so say plainly whether a re-scan is needed.
@@ -461,6 +484,11 @@ router.post('/:id/reenroll-face', auth, requireAdminOrHr,
         after: { enrolledCaptures: result.after, replaced: Boolean(req.body.replace) },
       });
 
+      // The set of people who can be matched just changed — push it to the
+      // ML service's resident cache. Fire-and-forget; a scan that sees a
+      // stale version resyncs on its own.
+      rosterCache.invalidate('face re-enrolled');
+
       res.json({
         success: true,
         enrolledCaptures: result.after,
@@ -503,6 +531,11 @@ router.delete('/:id/biometrics', auth, requireAdminOrHr,
         after: { enrolledCaptures: 0 },
         reason: req.body.reason || 'Manual erasure',
       });
+
+      // The set of people who can be matched just changed — push it to the
+      // ML service's resident cache. Fire-and-forget; a scan that sees a
+      // stale version resyncs on its own.
+      rosterCache.invalidate('biometrics erased');
 
       res.json({
         success: true,
@@ -547,6 +580,11 @@ router.delete('/:id', auth,
         after: { status: employee.status },
         reason: req.body.reason || null,
       });
+
+      // The set of people who can be matched just changed — push it to the
+      // ML service's resident cache. Fire-and-forget; a scan that sees a
+      // stale version resyncs on its own.
+      rosterCache.invalidate('employee deactivated');
 
       res.json({
         success: true,

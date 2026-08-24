@@ -8,6 +8,7 @@ const Employee = require('../models/Employee');
 const SpoofAttemptLog = require('../models/SpoofAttemptLog');
 const { notifySecurityEvent } = require('./notify');
 const ml = require('./mlServiceCall');
+const rosterCache = require('./rosterCache');
 // Registers the models .populate('workLocation'|'shiftTemplate'|'serviceTag') needs.
 require('../models/WorkLocation');
 require('../models/ShiftTemplate');
@@ -60,36 +61,15 @@ async function identifyAndVerify(images, action, options = {}) {
   //    user-facing message if the frame has no detectable face.
   const embedding = await ml.extractEmbedding(images[0]);
 
-  // 2. Load candidates — active and actually enrolled, scoped to the site
-  //    when the kiosk told us which one it is.
-  const filter = Employee.matchableFilter(
-    workLocationId ? { workLocation: workLocationId } : {}
-  );
-  const employees = await Employee.find(filter)
-    .select(CANDIDATE_FIELDS)
-    .populate('workLocation')
-    .populate('shiftTemplate')
-    .populate('serviceTag');
-
-  if (employees.length === 0) {
-    // Distinguish "this site has nobody enrolled" from "nobody anywhere is
-    // enrolled" — the first is a setup mistake worth naming precisely.
-    throw ml.serviceError(
-      404,
-      workLocationId
-        ? 'No approved employees are enrolled at this site yet. Please ask HR.'
-        : 'No registered employees found. Please register first.',
-      'NO_CANDIDATES'
-    );
-  }
-
-  const candidates = {};
-  for (const emp of employees) {
-    candidates[emp._id.toString()] = emp.faceEmbeddings;
-  }
-
-  // 3. Identify.
-  const matchResult = await ml.recognise(embedding, candidates);
+  // 2. Identify against the ML service's resident roster cache.
+  //
+  //    This used to load every matchable employee (with embeddings) from
+  //    MongoDB and ship them to the ML service on *every scan*. At this
+  //    deployment's real size that was a 13.6 MB payload per scan and a
+  //    guaranteed out-of-memory crash at a shift change. The roster now lives
+  //    in the ML service (see utils/rosterCache.js) and a scan carries only
+  //    the probe vector.
+  const matchResult = await identifyAgainstCache(embedding, workLocationId);
 
   if (!matchResult || !matchResult.match || !matchResult.matched_id) {
     // An ambiguous result is a different problem from an unknown face, and
@@ -105,12 +85,41 @@ async function identifyAndVerify(images, action, options = {}) {
     throw ml.serviceError(404, 'Face not recognized. Please register first.', 'NO_MATCH');
   }
 
-  const matchedEmployee = employees.find(emp => emp._id.toString() === matchResult.matched_id);
+  // Load only the one person who matched — a single indexed lookup, rather
+  // than the whole roster. This also re-checks matchability against the
+  // database rather than trusting the cache: the cache is refreshed
+  // asynchronously, so for a moment after someone is deactivated it can still
+  // hold them. The database is the authority on who is allowed to clock in.
+  const matchedEmployee = await Employee.findOne(
+    Employee.matchableFilter({ _id: matchResult.matched_id })
+  )
+    .select(CANDIDATE_FIELDS)
+    .populate('workLocation')
+    .populate('shiftTemplate')
+    .populate('serviceTag');
+
   if (!matchedEmployee) {
-    // The matcher returned an id that isn't in the set we sent — treat as
-    // no match rather than trusting it.
-    console.error('[IdentifyAndVerify] Matcher returned unknown id:', matchResult.matched_id);
+    console.warn(
+      '[IdentifyAndVerify] Cache matched %s but they are no longer matchable — resyncing.',
+      matchResult.matched_id
+    );
+    // Self-heal: the cache is out of date, so push the real roster.
+    rosterCache.invalidate('cache returned a non-matchable employee');
     throw ml.serviceError(404, 'Face not recognized. Please register first.', 'NO_MATCH');
+  }
+
+  // A site-scoped kiosk must never clock in someone who belongs elsewhere,
+  // even if the cache's site index somehow disagreed with the database.
+  if (workLocationId && String(matchedEmployee.workLocation?._id) !== String(workLocationId)) {
+    console.warn(
+      '[IdentifyAndVerify] %s matched at a site they are not assigned to — refusing.',
+      matchedEmployee.employeeId
+    );
+    throw ml.serviceError(
+      403,
+      'You are not assigned to this site. Please scan at your own site, or ask HR to reassign you.',
+      'WRONG_SITE'
+    );
   }
 
   // 4. Liveness — checked last, now that a failure can be attributed.
@@ -146,6 +155,54 @@ async function identifyAndVerify(images, action, options = {}) {
     livenessScore: liveness ? liveness.motion_score : null,
     candidatesCompared: matchResult.candidates_compared,
   };
+}
+
+/**
+ * Match a probe against the ML service's resident roster cache, resyncing once
+ * if the cache is missing or stale.
+ *
+ * The ML service deliberately refuses to match against a roster whose version
+ * it can't confirm, so "stale" is never silently treated as "no match" — that
+ * would let a deactivated employee keep clocking in after an ML restart.
+ */
+async function identifyAgainstCache(embedding, workLocationId) {
+  let result = await ml.recogniseCached(embedding, {
+    siteId: workLocationId,
+    version: rosterCache.version(),
+  });
+
+  if (result && result.cache_stale) {
+    // Either the ML service restarted (cold start wipes its memory) or the
+    // roster changed. Push it and retry exactly once — a retry loop here would
+    // turn one bad sync into an outage at a shift change.
+    await rosterCache.sync({ force: true });
+    result = await ml.recogniseCached(embedding, {
+      siteId: workLocationId,
+      version: rosterCache.version(),
+    });
+
+    if (result && result.cache_stale) {
+      throw ml.serviceError(
+        503,
+        'Face recognition is still starting up. Please try again in a moment.',
+        'CACHE_SYNC_FAILED'
+      );
+    }
+  }
+
+  // An empty roster is a setup problem, not a failed match, and the two need
+  // very different messages for the person standing at the kiosk.
+  if (result && (result.reason === 'cache_empty' || result.reason === 'no_candidates_at_site')) {
+    throw ml.serviceError(
+      404,
+      workLocationId
+        ? 'No approved employees are enrolled at this site yet. Please ask HR.'
+        : 'No registered employees found. Please register first.',
+      'NO_CANDIDATES'
+    );
+  }
+
+  return result;
 }
 
 // Never allowed to break a scan: a failure to write the security log must not

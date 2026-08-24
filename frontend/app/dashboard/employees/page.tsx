@@ -18,6 +18,8 @@ interface Shift { _id: string; name: string; startTime: string; endTime: string;
 
 // The tabs this page shows. Kept separate from the raw status enum so the
 // label wording ("Pending Approval", not "PENDING_APPROVAL") lives in one place.
+const PAGE_SIZE = 50;
+
 const TABS: { key: EmployeeStatus; label: string }[] = [
   { key: 'ACTIVE', label: 'Approved' },
   { key: 'PENDING_APPROVAL', label: 'Pending Approval' },
@@ -41,6 +43,9 @@ function EmployeesPageInner() {
   const { toast } = useToast();
   const [tab, setTab] = useState<EmployeeStatus>('ACTIVE');
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [page, setPage] = useState(1);
+  const [pages, setPages] = useState(1);
+  const [total, setTotal] = useState(0);
   const [counts, setCounts] = useState<{ active: number; pending: number; inactive: number } | null>(null);
   const [sites, setSites] = useState<Site[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
@@ -69,13 +74,18 @@ function EmployeesPageInner() {
   const fetchData = async () => {
     setLoading(true);
     try {
+      // Search and paging happen on the server. Filtering a client-side array
+      // only ever saw the first page, so at 4,000 employees searching for
+      // someone on page 12 silently found nothing.
       const [empPage, siteList, shiftList, counts] = await Promise.all([
-        api.getEmployeesPage({ status: tab, limit: 200 }),
+        api.getEmployeesPage({ status: tab, page, limit: PAGE_SIZE, search: search.trim() || undefined }),
         api.getLocations(),
         api.getShifts(),
         api.getEmployeeCounts(),
       ]);
       setEmployees(empPage.employees);
+      setTotal(empPage.pagination.total);
+      setPages(empPage.pagination.pages);
       setSites(siteList);
       setShifts(shiftList);
       setCounts(counts);
@@ -87,7 +97,16 @@ function EmployeesPageInner() {
     }
   };
 
-  useEffect(() => { fetchData(); }, [tab]);
+  // Debounced so typing a name doesn't fire a query per keystroke against a
+  // 4,000-row collection.
+  useEffect(() => {
+    const t = setTimeout(fetchData, search ? 300 : 0);
+    return () => clearTimeout(t);
+  }, [tab, page, search]);
+
+  // Any new filter invalidates the current page number — staying on page 7
+  // of a result set that now has 2 pages just shows an empty table.
+  useEffect(() => { setPage(1); }, [tab, search]);
 
   const handleEdit = (emp: Employee) => {
     setEditingId(emp._id);
@@ -175,11 +194,8 @@ function EmployeesPageInner() {
     }
   };
 
-  const filtered = employees.filter(e =>
-    e.name.toLowerCase().includes(search.toLowerCase()) ||
-    e.employeeId.toLowerCase().includes(search.toLowerCase()) ||
-    e.phone.includes(search)
-  );
+  // The server already applied the search and the page window.
+  const filtered = employees;
 
   const tabCount = (key: EmployeeStatus) => {
     if (!counts) return null;
@@ -379,6 +395,34 @@ function EmployeesPageInner() {
         </div>
         )}
       </div>
+
+      {!loading && total > 0 && (
+        <div className="flex items-center justify-between text-sm text-text-secondary">
+          <span>
+            Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} of {total}
+            {search && ' matching'}
+          </span>
+          {pages > 1 && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setPage(p => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className="px-3 py-1.5 bg-surface-elevated border border-border rounded-lg text-xs disabled:opacity-40"
+              >
+                Previous
+              </button>
+              <span className="text-xs text-text-tertiary">Page {page} of {pages}</span>
+              <button
+                onClick={() => setPage(p => Math.min(pages, p + 1))}
+                disabled={page >= pages}
+                className="px-3 py-1.5 bg-surface-elevated border border-border rounded-lg text-xs disabled:opacity-40"
+              >
+                Next
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       <AlertDialog open={!!deactivateTarget} onOpenChange={open => !open && setDeactivateTarget(null)}>
         <AlertDialogContent>

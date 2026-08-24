@@ -105,7 +105,10 @@ export function isNetworkError(err) {
 }
 
 let syncing = false;
-const MAX_SYNC_ATTEMPTS = 20; // ~ a stale/broken item shouldn't retry forever
+// Matches the backend's own MAX_OFFLINE_AGE_MS (utils/attendanceEngine.js).
+// Past this the server will reject the scan as too old no matter what, so
+// retrying it forever just wastes the queue.
+const MAX_QUEUE_AGE_HOURS = 36;
 
 export async function trySync() {
   if (syncing) return;
@@ -120,12 +123,26 @@ export async function trySync() {
           headers: kioskHeaders(),
           body: JSON.stringify(item.body),
         });
-        if (res.ok || res.status < 500) {
-          // 2xx (recorded) or 4xx (e.g. a stale/invalid scan the server has a
-          // real, final answer for) — both are resolved. Don't retry those.
-          await withStore('readwrite', store => reqToPromise(store.delete(item.id)));
-        } else {
+        // 429 is a 4xx but is emphatically NOT a final answer — it means
+        // "try again shortly". Deleting on any 4xx meant a rate-limited
+        // replay was thrown away permanently: exactly the case a big site
+        // hits when a whole shift's queued scans sync at once after an
+        // outage, so the scans most at risk were the ones being destroyed.
+        // 408 (timeout) and 425 (too early) are retryable for the same reason.
+        const retryable = res.status >= 500 || res.status === 429 || res.status === 408 || res.status === 425;
+
+        if (retryable) {
           await bumpAttempts(item);
+          // Back off for the rest of this pass rather than hammering a server
+          // that has just told us to slow down.
+          if (res.status === 429) {
+            const retryAfter = Number(res.headers.get('Retry-After')) || 5;
+            await new Promise(r => setTimeout(r, Math.min(retryAfter, 30) * 1000));
+          }
+        } else {
+          // 2xx (recorded) or a genuine 4xx the server has a final answer for
+          // (already clocked in, scan too old, unknown face) — resolved.
+          await withStore('readwrite', store => reqToPromise(store.delete(item.id)));
         }
       } catch {
         await bumpAttempts(item); // still offline
@@ -139,10 +156,21 @@ export async function trySync() {
   }
 }
 
+// A queued scan is only given up on once it is too old for the server to
+// accept anyway (the backend refuses a capture older than 36 hours), not
+// after N attempts. Attempt-count expiry was dangerous: a long outage plus
+// rate limiting could burn through the attempts and delete a real, still-
+// recoverable attendance record.
 async function bumpAttempts(item) {
   const attempts = (item.attempts || 0) + 1;
-  if (attempts >= MAX_SYNC_ATTEMPTS) {
-    console.error(`[OfflineQueue] Dropping scan ${item.id} after ${attempts} failed sync attempts.`);
+  const queuedAt = new Date(item.queuedAt || item.body?.capturedAt || Date.now()).getTime();
+  const ageHours = (Date.now() - queuedAt) / 3600000;
+
+  if (ageHours > MAX_QUEUE_AGE_HOURS) {
+    console.error(
+      `[OfflineQueue] Scan ${item.id} is ${ageHours.toFixed(1)}h old and can no longer be ` +
+      'accepted by the server. Dropping — this attendance must be entered manually by HR.'
+    );
     await withStore('readwrite', store => reqToPromise(store.delete(item.id))).catch(() => {});
     return;
   }

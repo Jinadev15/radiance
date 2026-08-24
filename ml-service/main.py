@@ -211,6 +211,27 @@ class LivenessPayload(BaseModel):
         return cleaned
 
 
+class CachedEmployee(BaseModel):
+    id: str
+    site_id: Optional[str] = None
+    embeddings: List[List[float]]
+
+
+class SyncPayload(BaseModel):
+    # Opaque token the backend computes from the roster's current state. The
+    # ML service never interprets it, only compares it for equality.
+    version: str
+    employees: List[CachedEmployee]
+
+
+class CachedRecognizePayload(BaseModel):
+    embedding: List[float]
+    site_id: Optional[str] = None
+    version: str
+    threshold: Optional[float] = None
+    min_margin: Optional[float] = None
+
+
 class RecognizePayload(BaseModel):
     embedding: List[float]
     # Each candidate may hold SEVERAL embeddings for one person (different
@@ -414,24 +435,26 @@ def _flatten_candidates(candidates: Dict[str, List], dim: int):
     return np.asarray(vectors, dtype=np.float32), owners, skipped
 
 
-def match_embedding(
+def _rank(
+    matrix: np.ndarray,
+    owners: List[str],
     probe: List[float],
-    candidates: Dict[str, List],
     threshold: float,
     min_margin: float,
+    skipped: int = 0,
+    prenormalised: bool = False,
 ) -> dict:
-    dim = len(probe)
-    matrix, owners, skipped = _flatten_candidates(candidates, dim)
-    if matrix is None:
-        return {
-            "match": False, "matched_id": None, "confidence": 0.0,
-            "margin": None, "runner_up_id": None, "runner_up_confidence": None,
-            "candidates_compared": 0, "candidates_skipped": skipped,
-            "reason": "no_comparable_candidates",
-        }
+    """
+    Score one probe against a matrix of candidate embeddings.
 
+    Shared by both the cached and the payload-carrying match paths so the two
+    can never drift on the thing that matters most — how a match is decided.
+    `prenormalised` skips re-normalising a cached matrix that was already
+    normalised at sync time.
+    """
     target = np.asarray(probe, dtype=np.float32).reshape(1, -1)
-    scores = (_normalise_rows(matrix) @ _normalise_rows(target).T).ravel()
+    rows = matrix if prenormalised else _normalise_rows(matrix)
+    scores = (rows @ _normalise_rows(target).T).ravel()
 
     # Best score *per person*, not per stored embedding — otherwise someone
     # with five enrolment captures would occupy both the best and runner-up
@@ -474,12 +497,149 @@ def match_embedding(
     }
 
 
+def _empty_match(skipped: int = 0, reason: str = "no_comparable_candidates") -> dict:
+    return {
+        "match": False, "matched_id": None, "confidence": 0.0,
+        "margin": None, "runner_up_id": None, "runner_up_confidence": None,
+        "candidates_compared": 0, "candidates_skipped": skipped,
+        "reason": reason,
+    }
+
+
+def match_embedding(
+    probe: List[float],
+    candidates: Dict[str, List],
+    threshold: float,
+    min_margin: float,
+) -> dict:
+    matrix, owners, skipped = _flatten_candidates(candidates, len(probe))
+    if matrix is None:
+        return _empty_match(skipped)
+    return _rank(matrix, owners, probe, threshold, min_margin, skipped)
+
+
+# ---------------------------------------------------------------------------
+# Resident embedding cache
+# ---------------------------------------------------------------------------
+# Sending the whole roster's embeddings on every scan does not survive real
+# scale. Measured against this deployment's actual size (4,000 employees, 126
+# sites), the candidate payload was 13.6 MB *per scan* — roughly 1.8 GB/minute
+# of backend->ML traffic at a morning shift change, and enough resident memory
+# per concurrent request to OOM a small instance outright.
+#
+# The embeddings barely ever change, so they live here instead: pushed once by
+# the backend, held as one pre-normalised float32 matrix, and re-pushed only
+# when an employee is enrolled, approved, re-enrolled or deactivated. A scan
+# then carries only the probe vector.
+#
+# 4,000 employees x ~1.2 embeddings x 128 float32 = under 3 MB resident. The
+# per-site row index lets a site-scoped scan compare against just that site's
+# roster, which is both faster and materially more accurate (fewer candidates
+# means fewer chances for a false match).
+_cache_lock = threading.RLock()
+_cache_version: Optional[str] = None
+_cache_rows: Optional[np.ndarray] = None      # (M, D) L2-normalised
+_cache_owners: List[str] = []                 # length M, employee id per row
+_cache_site_rows: Dict[str, np.ndarray] = {}  # site id -> row indices into _cache_rows
+_cache_people = 0
+_cache_synced_at: Optional[float] = None
+
+
+def _rebuild_cache(version: str, employees: List[dict]) -> dict:
+    """Replace the resident cache. Returns a summary for the sync response."""
+    global _cache_version, _cache_rows, _cache_owners, _cache_site_rows
+    global _cache_people, _cache_synced_at
+
+    vectors: List[List[float]] = []
+    owners: List[str] = []
+    site_rows: Dict[str, List[int]] = {}
+    skipped = 0
+    dim: Optional[int] = None
+
+    for emp in employees:
+        emp_id = emp.get("id")
+        embeddings = emp.get("embeddings") or []
+        site_id = emp.get("site_id")
+        if not emp_id or not embeddings:
+            continue
+        for emb in embeddings:
+            if not isinstance(emb, (list, tuple)) or len(emb) == 0:
+                skipped += 1
+                continue
+            if dim is None:
+                dim = len(emb)
+            elif len(emb) != dim:
+                # A mixed-dimension roster would silently corrupt the matrix.
+                skipped += 1
+                continue
+            idx = len(vectors)
+            vectors.append(list(emb))
+            owners.append(emp_id)
+            if site_id:
+                site_rows.setdefault(site_id, []).append(idx)
+
+    with _cache_lock:
+        if not vectors:
+            _cache_version = version
+            _cache_rows = None
+            _cache_owners = []
+            _cache_site_rows = {}
+            _cache_people = 0
+            _cache_synced_at = time.time()
+        else:
+            # Normalise once here, not per scan.
+            _cache_rows = _normalise_rows(np.asarray(vectors, dtype=np.float32))
+            _cache_owners = owners
+            _cache_site_rows = {s: np.asarray(idxs, dtype=np.int32) for s, idxs in site_rows.items()}
+            _cache_version = version
+            _cache_people = len(set(owners))
+            _cache_synced_at = time.time()
+
+    return {
+        "version": version,
+        "people": _cache_people,
+        "embeddings": len(vectors),
+        "sites": len(site_rows),
+        "skipped": skipped,
+        "bytes": int(_cache_rows.nbytes) if _cache_rows is not None else 0,
+    }
+
+
+def _match_cached(probe: List[float], site_id: Optional[str], threshold: float, min_margin: float) -> dict:
+    with _cache_lock:
+        rows = _cache_rows
+        owners = _cache_owners
+        site_index = _cache_site_rows.get(site_id) if site_id else None
+
+    if rows is None:
+        return _empty_match(reason="cache_empty")
+
+    if site_id:
+        if site_index is None or len(site_index) == 0:
+            # The site is known to the backend but has nobody enrolled here.
+            return _empty_match(reason="no_candidates_at_site")
+        subset = rows[site_index]
+        subset_owners = [owners[i] for i in site_index]
+        return _rank(subset, subset_owners, probe, threshold, min_margin, prenormalised=True)
+
+    return _rank(rows, owners, probe, threshold, min_margin, prenormalised=True)
+
+
 # Endpoints
 
 @app.get("/health")
 def health_check():
     """Health check. Reports degraded (not healthy) when the models failed to load."""
     ready = MODEL_LOAD_ERROR is None and detector is not None and recognizer is not None
+    with _cache_lock:
+        cache = {
+            "version": _cache_version,
+            "people": _cache_people,
+            "embeddings": 0 if _cache_rows is None else int(_cache_rows.shape[0]),
+            "sites": len(_cache_site_rows),
+            "bytes": 0 if _cache_rows is None else int(_cache_rows.nbytes),
+            "synced_at": _cache_synced_at,
+        }
     return {
         "status": "healthy" if ready else "degraded",
         "service": "Radiance ML Service",
@@ -489,6 +649,7 @@ def health_check():
         "cosine_threshold": COSINE_MATCH_THRESHOLD,
         "min_match_margin": MIN_MATCH_MARGIN,
         "auth_required": bool(ML_SERVICE_TOKEN),
+        "embedding_cache": cache,
     }
 
 
@@ -573,6 +734,67 @@ def recognize_face(payload: RecognizePayload, _: None = Depends(require_token), 
         f"[/recognize-face] people={result['candidates_compared']} "
         f"best={result['confidence']} margin={result['margin']} "
         f"reason={result['reason']} ({result['elapsed_ms']}ms)"
+    )
+    return result
+
+
+@app.post("/sync-embeddings")
+def sync_embeddings(payload: SyncPayload, _: None = Depends(require_token)):
+    """
+    Replace the resident embedding cache.
+
+    Pushed by the backend at startup and whenever the roster changes. No model
+    call is involved, so this stays available even if the face engine failed
+    to load.
+    """
+    started = time.perf_counter()
+    summary = _rebuild_cache(payload.version, [e.model_dump() for e in payload.employees])
+    summary["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 1)
+    logger.info(
+        f"[/sync-embeddings] version={summary['version']} people={summary['people']} "
+        f"embeddings={summary['embeddings']} sites={summary['sites']} "
+        f"skipped={summary['skipped']} ({summary['elapsed_ms']}ms)"
+    )
+    return summary
+
+
+@app.post("/recognize-cached")
+def recognize_cached(payload: CachedRecognizePayload, _: None = Depends(require_token)):
+    """
+    Identify a probe embedding against the resident cache.
+
+    The scan payload is just the probe vector — the roster is already here.
+    If the caller's cache version doesn't match ours (we restarted, or the
+    roster changed), this returns `cache_stale` so the backend can re-sync and
+    retry rather than matching against a roster it can't verify. Silently
+    matching against a stale roster is the dangerous option: it would let a
+    deactivated employee keep clocking in.
+    """
+    started = time.perf_counter()
+
+    with _cache_lock:
+        current_version = _cache_version
+        has_cache = _cache_rows is not None
+
+    if not has_cache or current_version != payload.version:
+        return {
+            "cache_stale": True,
+            "server_version": current_version,
+            "requested_version": payload.version,
+            **_empty_match(reason="cache_stale"),
+        }
+
+    threshold = payload.threshold if payload.threshold is not None else COSINE_MATCH_THRESHOLD
+    min_margin = payload.min_margin if payload.min_margin is not None else MIN_MATCH_MARGIN
+
+    result = _match_cached(payload.embedding, payload.site_id, threshold, min_margin)
+    result["cache_stale"] = False
+    result["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 1)
+
+    logger.info(
+        f"[/recognize-cached] site={payload.site_id or 'all'} "
+        f"people={result['candidates_compared']} best={result['confidence']} "
+        f"margin={result['margin']} reason={result['reason']} ({result['elapsed_ms']}ms)"
     )
     return result
 

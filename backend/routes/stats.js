@@ -6,7 +6,7 @@ const Employee = require('../models/Employee');
 const AttendanceLog = require('../models/AttendanceLog');
 const WorkLocation = require('../models/WorkLocation');
 const auth = require('../middleware/auth');
-const { resolveDay } = require('../utils/roster');
+const { resolveDayBySite } = require('../utils/roster');
 const { businessDate, recentBusinessDates, DEFAULT_TZ } = require('../utils/tz');
 
 // GET /api/v1/dashboard/stats
@@ -35,73 +35,60 @@ router.get('/stats', auth, async (req, res) => {
     const employeeFilter = Employee.rosterFilter();
     if (workLocation) employeeFilter.workLocation = workLocation;
 
-    const employees = await Employee.find(employeeFilter).select('_id workLocation weeklyOff').lean();
     const today = businessDate(new Date(), DEFAULT_TZ);
-    const day = await resolveDay(today, employees, DEFAULT_TZ);
+
+    // One employee read and one grouped roster resolution, regardless of how
+    // many sites exist. The previous version ran resolveDay() once per site
+    // inside a Promise.all — ~380 concurrent queries at 126 sites, for a
+    // single dashboard load.
+    const employees = await Employee.find(employeeFilter)
+      .select('_id workLocation weeklyOff').lean();
+    const { totals, bySite: siteBuckets } = await resolveDayBySite(today, employees, DEFAULT_TZ);
 
     let bySite = [];
     if (!workLocation) {
-      const sites = await WorkLocation.find({ isActive: true }).select('name radiusMeters').lean();
-      const allEmployees = await Employee.find(Employee.rosterFilter())
-        .select('_id workLocation weeklyOff').lean();
+      const sites = await WorkLocation.find({ isActive: true }).select('name').lean();
+      const blank = { totalEmployees: 0, expected: 0, present: 0, late: 0, onLeave: 0, holiday: 0 };
+      bySite = sites.map(site => {
+        const b = siteBuckets[String(site._id)] || blank;
+        return {
+          siteId: site._id,
+          siteName: site.name,
+          totalEmployees: b.totalEmployees,
+          expected: b.expected,
+          presentToday: b.present,
+          late: b.late,
+          onLeave: b.onLeave,
+          holiday: b.holiday,
+        };
+      });
 
-      const bySiteId = new Map();
-      for (const emp of allEmployees) {
-        const key = emp.workLocation ? String(emp.workLocation) : 'unassigned';
-        if (!bySiteId.has(key)) bySiteId.set(key, []);
-        bySiteId.get(key).push(emp);
-      }
-
-      // One resolveDay() per site rather than one query per employee — still
-      // a fixed number of queries per site (3), not per employee.
-      const siteDays = await Promise.all(
-        sites.map(async (site) => {
-          const siteEmployees = bySiteId.get(String(site._id)) || [];
-          const resolved = siteEmployees.length
-            ? await resolveDay(today, siteEmployees, DEFAULT_TZ)
-            : null;
-          return { site, resolved };
-        })
-      );
-
-      bySite = siteDays.map(({ site, resolved }) => ({
-        siteId: site._id,
-        siteName: site.name,
-        totalEmployees: resolved ? resolved.totalEmployees : 0,
-        expected: resolved ? resolved.expected : 0,
-        presentToday: resolved ? resolved.present : 0,
-        late: resolved ? resolved.late : 0,
-        onLeave: resolved ? resolved.onLeave : 0,
-        holiday: resolved ? resolved.holiday : 0,
-      }));
-
-      const unassigned = bySiteId.get('unassigned');
-      if (unassigned && unassigned.length > 0) {
-        const resolvedUnassigned = await resolveDay(today, unassigned, DEFAULT_TZ);
+      const unassigned = siteBuckets.unassigned;
+      if (unassigned && unassigned.totalEmployees > 0) {
         bySite.push({
           siteId: null, siteName: 'Unassigned',
-          totalEmployees: resolvedUnassigned.totalEmployees,
-          expected: resolvedUnassigned.expected,
-          presentToday: resolvedUnassigned.present,
-          late: resolvedUnassigned.late,
-          onLeave: resolvedUnassigned.onLeave,
-          holiday: resolvedUnassigned.holiday,
+          totalEmployees: unassigned.totalEmployees,
+          expected: unassigned.expected,
+          presentToday: unassigned.present,
+          late: unassigned.late,
+          onLeave: unassigned.onLeave,
+          holiday: unassigned.holiday,
         });
       }
     }
 
     res.status(200).json({
-      totalEmployees: day.totalEmployees,
-      expected: day.expected,
-      presentToday: day.present,
-      absent: day.absent,
-      onTime: day.onTime,
-      late: day.late,
-      onLeave: day.onLeave,
-      weeklyOff: day.weeklyOff,
-      holiday: day.holiday,
-      stillClockedIn: day.stillClockedIn,
-      attendanceRate: day.attendanceRate,
+      totalEmployees: totals.totalEmployees,
+      expected: totals.expected,
+      presentToday: totals.present,
+      absent: totals.absent,
+      onTime: totals.onTime,
+      late: totals.late,
+      onLeave: totals.onLeave,
+      weeklyOff: totals.weeklyOff,
+      holiday: totals.holiday,
+      stillClockedIn: totals.stillClockedIn,
+      attendanceRate: totals.attendanceRate,
       bySite,
     });
   } catch (error) {

@@ -11,6 +11,7 @@ const ml = require('../utils/mlServiceCall');
 const { validateNationalId, hashNationalId, last4 } = require('../utils/nationalId');
 const { requireKioskDevice } = require('../middleware/kiosk');
 const audit = require('../utils/audit');
+const rosterCache = require('../utils/rosterCache');
 const { notifyAdmins } = require('../utils/notify');
 
 // Self-registrations land in PENDING_APPROVAL, not straight into the roster.
@@ -268,6 +269,10 @@ router.post('/',
         targetLabel: `${created.name} (${created.employeeId})`,
         after: { status: created.status, workLocation: site.name, selfRegistered },
       });
+
+      // A new enrolment is immediately matchable (pending employees can
+      // clock in), so the ML cache needs it now, not at the next restart.
+      rosterCache.invalidate('employee registered');
 
       if (selfRegistered) {
         // HR has to know a profile is waiting, or approvals sit for days and

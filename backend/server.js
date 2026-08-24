@@ -10,6 +10,7 @@ const { runAutoClockOutSweep } = require('./utils/autoClockOut');
 const { sendDailyDigest } = require('./utils/dailyDigest');
 const { health: mlHealth } = require('./utils/mlServiceCall');
 const { smtpStatus } = require('./utils/notify');
+const rosterCache = require('./utils/rosterCache');
 const { DEFAULT_TZ, businessDateTime } = require('./utils/tz');
 
 // Fail loudly at boot on a production misconfiguration that would otherwise
@@ -123,6 +124,7 @@ app.get('/api/v1/health', async (req, res) => {
     mlService: ml,
     smtp: smtpStatus(),
     kiosk: kioskStatus(),
+    rosterCache: rosterCache.status(),
     timestamp: new Date(),
   });
 });
@@ -175,6 +177,21 @@ async function connectWithRetry() {
     mongoose.connection.on('error', (err) => {
       console.error('[MongoDB]', err.message);
     });
+    // Push the roster to the ML service's resident embedding cache as soon as
+    // the database is up. Without this the first scan after a backend restart
+    // pays for a full sync; with it, the common path is already warm.
+    // Failure is non-fatal — a scan that finds a stale cache resyncs itself.
+    rosterCache.sync({ force: true }).catch(e =>
+      console.warn('[RosterCache] Initial sync failed (will retry on first scan):', e.error || e.message)
+    );
+    // Periodic reconciliation. Every mutation already invalidates the cache
+    // explicitly, so this only covers the gaps those can't see: a direct
+    // database edit, or a background invalidate that failed while the ML
+    // service happened to be restarting.
+    setInterval(() => {
+      rosterCache.sync().catch(() => {});
+    }, 10 * 60 * 1000);
+
     runAutoClockOutSweep().catch(e => console.error('[AutoClockOut]', e.message));
     setInterval(() => {
       runAutoClockOutSweep().catch(e => console.error('[AutoClockOut]', e.message));

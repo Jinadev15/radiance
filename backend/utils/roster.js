@@ -107,4 +107,93 @@ async function resolveDay(dateStr, employees, timeZone = DEFAULT_TZ) {
   };
 }
 
-module.exports = { resolveDay };
+/**
+ * Per-site breakdown for one day, in a fixed number of queries.
+ *
+ * The dashboard previously called resolveDay() once per site inside a
+ * Promise.all. At this deployment's 126 sites that fired ~380 concurrent
+ * queries for a single dashboard load — enough to exhaust the connection pool
+ * and make the page time out, and it got worse with every site added.
+ *
+ * This does the same work in four queries total, regardless of site count, by
+ * grouping in the database rather than in a loop.
+ */
+async function resolveDayBySite(dateStr, employees, timeZone = DEFAULT_TZ) {
+  const employeeIds = employees.map(e => e._id);
+
+  const [onLeave, holidays, presentRows] = await Promise.all([
+    LeaveRequest.approvedOnDate(dateStr, employeeIds),
+    Holiday.onDate(dateStr),
+    // One row per employee who has any session today, with their earliest
+    // session's status — computed in the database, not in Node.
+    AttendanceLog.aggregate([
+      { $match: { date: dateStr, employee: { $in: employeeIds } } },
+      { $sort: { clockInTime: 1 } },
+      {
+        $group: {
+          _id: '$employee',
+          firstStatus: { $first: '$status' },
+          anyOpen: { $max: { $cond: [{ $eq: ['$clockOutTime', null] }, 1, 0] } },
+        },
+      },
+    ]),
+  ]);
+
+  const presentById = new Map(presentRows.map(r => [String(r._id), r]));
+  const dayOfWeek = businessDayOfWeek(startOfBusinessDay(dateStr, timeZone), timeZone);
+
+  // siteKey -> counters
+  const bySite = new Map();
+  const blank = () => ({
+    totalEmployees: 0, expected: 0, present: 0, onTime: 0, late: 0,
+    absent: 0, onLeave: 0, weeklyOff: 0, holiday: 0, stillClockedIn: 0,
+  });
+  const totals = blank();
+
+  for (const emp of employees) {
+    const key = emp.workLocation ? String(emp.workLocation) : 'unassigned';
+    if (!bySite.has(key)) bySite.set(key, blank());
+    const site = bySite.get(key);
+
+    const empKey = String(emp._id);
+    const log = presentById.get(empKey);
+    const isHoliday = holidays.companyWide || (emp.workLocation && holidays.siteIds.has(key));
+    const offDays = Array.isArray(emp.weeklyOff) ? emp.weeklyOff : [];
+    const isWeeklyOff = offDays.includes(dayOfWeek);
+
+    site.totalEmployees += 1;
+    totals.totalEmployees += 1;
+
+    if (log) {
+      site.present += 1; totals.present += 1;
+      if (log.firstStatus === 'LATE') { site.late += 1; totals.late += 1; }
+      else { site.onTime += 1; totals.onTime += 1; }
+      if (log.anyOpen) { site.stillClockedIn += 1; totals.stillClockedIn += 1; }
+      site.expected += 1; totals.expected += 1;
+      continue;
+    }
+
+    // Same precedence as resolveDay: holiday, then weekly off, then leave.
+    if (isHoliday) { site.holiday += 1; totals.holiday += 1; }
+    else if (isWeeklyOff) { site.weeklyOff += 1; totals.weeklyOff += 1; }
+    else if (onLeave.has(empKey)) { site.onLeave += 1; totals.onLeave += 1; }
+    else {
+      site.absent += 1; totals.absent += 1;
+      site.expected += 1; totals.expected += 1;
+    }
+  }
+
+  const rate = (b) => (b.expected > 0 ? Math.round((b.present / b.expected) * 100) : null);
+  totals.attendanceRate = rate(totals);
+  totals.date = dateStr;
+  totals.dayOfWeek = dayOfWeek;
+
+  return {
+    totals,
+    bySite: Object.fromEntries(
+      Array.from(bySite.entries()).map(([k, v]) => [k, { ...v, attendanceRate: rate(v) }])
+    ),
+  };
+}
+
+module.exports = { resolveDay, resolveDayBySite };

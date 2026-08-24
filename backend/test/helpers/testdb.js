@@ -17,7 +17,28 @@ let mongod = null;
 
 async function start() {
   mongod = await MongoMemoryServer.create();
-  await mongoose.connect(mongod.getUri());
+  // monitorCommands lets a test count the queries an operation actually
+  // issues — the only reliable way to assert "this must not fan out one
+  // query per site". It has to be set at connect time; mongoose.set() after
+  // the fact is rejected.
+  await mongoose.connect(mongod.getUri(), { monitorCommands: true });
+}
+
+/**
+ * Count the MongoDB commands issued while `fn` runs.
+ * Ignores the driver's own bookkeeping so the number reflects real queries.
+ */
+async function countQueries(fn) {
+  const ignored = new Set(['ping', 'hello', 'ismaster', 'endSessions', 'buildInfo']);
+  let count = 0;
+  const listener = (ev) => { if (!ignored.has(ev.commandName)) count += 1; };
+  mongoose.connection.client.on('commandStarted', listener);
+  try {
+    const result = await fn();
+    return { count, result };
+  } finally {
+    mongoose.connection.client.removeListener('commandStarted', listener);
+  }
 }
 
 async function stop() {
@@ -42,4 +63,4 @@ async function ensureIndexes(...models) {
   await Promise.all(models.map(m => m.init()));
 }
 
-module.exports = { start, stop, reset, ensureIndexes, mongoose };
+module.exports = { start, stop, reset, ensureIndexes, countQueries, mongoose };

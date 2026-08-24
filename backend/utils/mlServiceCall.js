@@ -127,6 +127,39 @@ async function recognise(embedding, candidates, options = {}) {
   }
 }
 
+/**
+ * Replace the ML service's resident embedding cache.
+ *
+ * Gets a much longer timeout than a scan: this is a multi-megabyte push that
+ * happens rarely, and failing it because a 6-second scan budget elapsed would
+ * leave the cache stale and force every subsequent scan to retry.
+ */
+async function syncEmbeddings(payload) {
+  try {
+    return await call('/sync-embeddings', payload, { fastTimeout: 30000, coldTimeout: 90000 });
+  } catch (err) {
+    throw translate(err, 'Could not sync the employee roster to the face recognition service.');
+  }
+}
+
+/**
+ * Identify against the ML service's resident cache — the scan payload is just
+ * the probe vector, not the whole roster.
+ *
+ * Returns the raw result including `cache_stale`, which the caller must handle
+ * by resyncing rather than treating as "no match".
+ */
+async function recogniseCached(embedding, { siteId = null, version, threshold, minMargin } = {}) {
+  try {
+    const body = { embedding, site_id: siteId, version };
+    if (threshold !== undefined) body.threshold = threshold;
+    if (minMargin !== undefined) body.min_margin = minMargin;
+    return await call('/recognize-cached', body);
+  } catch (err) {
+    throw translate(err);
+  }
+}
+
 /** 1:1 check of a probe embedding against one person's stored embeddings. */
 async function compareToEmployee(embedding, embeddings, threshold) {
   try {
@@ -152,6 +185,8 @@ module.exports = {
   extractEmbedding,
   checkLiveness,
   recognise,
+  syncEmbeddings,
+  recogniseCached,
   compareToEmployee,
   health,
   serviceError,
