@@ -75,7 +75,7 @@ async function identifyAndVerify(images, action, options = {}) {
 
   if (!matchResult || !matchResult.match || !matchResult.matched_id) {
     // An ambiguous result is a different problem from an unknown face, and
-    // the person standing at the kiosk needs different advice for each.
+    // the person holding the phone needs different advice for each.
     if (matchResult && matchResult.reason === 'ambiguous_margin') {
       throw ml.serviceError(
         409,
@@ -84,6 +84,28 @@ async function identifyAndVerify(images, action, options = {}) {
         'AMBIGUOUS_MATCH'
       );
     }
+
+    // Before declaring someone unknown, check whether they are simply
+    // standing at a site they are not assigned to.
+    //
+    // Facility-management staff genuinely rotate between client sites, and
+    // matching is scoped to the roster of the site the GPS resolved to — so
+    // an enrolled employee covering a shift elsewhere would otherwise be told
+    // "Face not recognized. Please register first." That message is not just
+    // unhelpful, it is actively harmful: it pushes someone who already has a
+    // profile toward creating a second one.
+    if (workLocationIds && workLocationIds.length > 0) {
+      const elsewhere = await identifyElsewhere(embedding);
+      if (elsewhere) {
+        throw ml.serviceError(
+          403,
+          `You are enrolled at ${elsewhere.siteName}, not at this site. ` +
+          'Please scan at your own site, or ask HR to reassign you before clocking in here.',
+          'WRONG_SITE'
+        );
+      }
+    }
+
     throw ml.serviceError(404, 'Face not recognized. Please register first.', 'NO_MATCH');
   }
 
@@ -160,6 +182,33 @@ async function identifyAndVerify(images, action, options = {}) {
     livenessScore: liveness ? liveness.motion_score : null,
     candidatesCompared: matchResult.candidates_compared,
   };
+}
+
+/**
+ * Diagnostic-only lookup against the whole roster, used to explain a failed
+ * site-scoped match.
+ *
+ * Deliberately returns a description rather than an employee: nothing here
+ * may become a clock-in. The caller's only use for it is turning a wrong
+ * "register first" into a correct "you're at the wrong site". Any failure is
+ * swallowed — this runs on a path that is already an error, and it must
+ * never turn a clear 404 into a 500.
+ */
+async function identifyElsewhere(embedding) {
+  try {
+    const result = await ml.recogniseCached(embedding, { siteId: null, version: rosterCache.version() });
+    if (!result || !result.match || !result.matched_id) return null;
+
+    const employee = await Employee.findOne(Employee.matchableFilter({ _id: result.matched_id }))
+      .select('workLocation')
+      .populate('workLocation', 'name');
+    if (!employee) return null;
+
+    return { siteName: (employee.workLocation && employee.workLocation.name) || 'another site' };
+  } catch (err) {
+    console.warn('[IdentifyAndVerify] cross-site lookup failed: %s', err.message);
+    return null;
+  }
 }
 
 /**

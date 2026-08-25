@@ -1,6 +1,16 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 
-export default function FaceCapture({ onCapture, onBack }) {
+// `requireLocation` is set for clock-in and clock-out, which the backend
+// refuses without a usable GPS fix (see backend/utils/siteResolver.js —
+// resolveScanSite). Blocking the shutter until a fix arrives is kinder than
+// letting someone scan, wait through face recognition, and then be told it
+// was never going to work. It also keeps a locationless scan out of the
+// offline queue, where it would replay, be rejected, and be dropped — losing
+// that person's attendance silently.
+//
+// Registration, self-service and issue reports do not need a fix, so they
+// leave this false and scan regardless.
+export default function FaceCapture({ onCapture, onBack, requireLocation = false }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const [hasCamera, setHasCamera] = useState(false);
@@ -88,6 +98,7 @@ export default function FaceCapture({ onCapture, onBack }) {
   // between them — a static printed photo can't produce that.
   const handleCapture = useCallback(() => {
     if (!videoRef.current || !canvasRef.current || capturing) return;
+    if (requireLocation && !location) return;
     setCapturing(true);
     const first = grabFrame();
     setTimeout(() => {
@@ -95,7 +106,7 @@ export default function FaceCapture({ onCapture, onBack }) {
       setCapturing(false);
       onCapture([first, second].filter(Boolean), location);
     }, 450);
-  }, [grabFrame, onCapture, location, capturing]);
+  }, [grabFrame, onCapture, location, capturing, requireLocation]);
 
   if (errorMsg) {
     return (
@@ -121,7 +132,15 @@ export default function FaceCapture({ onCapture, onBack }) {
 
         {locationDenied && (
           <div className="status-banner status-banner--warning" style={{ pointerEvents: 'auto', maxWidth: '360px' }}>
-            Location access is off — you may be asked to enable it to complete this scan, since your site requires being nearby.
+            {requireLocation
+              ? 'Location is off. Clocking in and out needs it, to confirm you are at your site. Please turn on location for this page, then reload.'
+              : 'Location access is off — you may be asked to enable it to complete this scan, since your site requires being nearby.'}
+          </div>
+        )}
+
+        {requireLocation && !locationDenied && !location && (
+          <div className="status-banner status-banner--warning" style={{ pointerEvents: 'auto', maxWidth: '360px' }}>
+            Finding your location…
           </div>
         )}
 
@@ -135,12 +154,16 @@ export default function FaceCapture({ onCapture, onBack }) {
 
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
           <span className="capture-hint">
-            {hasCamera ? 'Align face inside the frame' : 'Waiting for camera permission…'}
+            {!hasCamera
+              ? 'Waiting for camera permission…'
+              : requireLocation && !location
+                ? 'Waiting for your location…'
+                : 'Align face inside the frame'}
           </span>
           <button
             className="capture-btn-trigger"
             onClick={handleCapture}
-            disabled={!hasCamera || capturing}
+            disabled={!hasCamera || capturing || (requireLocation && !location)}
             aria-label="Capture face"
             title="Capture Face"
           >

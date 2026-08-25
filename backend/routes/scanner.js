@@ -6,7 +6,7 @@ const { identifyAndVerify } = require('../utils/identifyAndVerify');
 const engine = require('../utils/attendanceEngine');
 const { businessTime, businessDate, DEFAULT_TZ } = require('../utils/tz');
 const { requireKioskDevice } = require('../middleware/kiosk');
-const { sitesAtLocation, nearestSite } = require('../utils/siteResolver');
+const { resolveScanSite } = require('../utils/siteResolver');
 const { assessLocation } = require('../utils/locationTrust');
 
 // POST /api/v1/clock-in — Employee clock in
@@ -39,33 +39,18 @@ router.post('/',
       const { at, source } = engine.resolveCaptureTime(capturedAt);
       const deviceId = req.deviceId || null;
 
-      // Work out which site this scan is at from the GPS, and match faces only
-      // against the people assigned there.
+      // Location gate, before any ML work. Refuses a missing fix, a fix too
+      // imprecise to mean anything, and a position outside every site fence.
       //
       // Employees scan from their own phones, so the site can no longer come
-      // from the device. Deriving it from coordinates keeps the benefit that
-      // mattered: comparing against a couple of hundred candidates instead of
-      // all 4,000 is both faster and materially more accurate, because every
-      // extra enrolled face is another chance for a false match.
-      let scopedSiteIds = null;
-      if (latitude !== undefined && latitude !== null && longitude !== undefined && longitude !== null) {
-        const here = await sitesAtLocation(latitude, longitude);
-        if (here.length > 0) {
-          scopedSiteIds = here.map(s => s._id);
-        } else {
-          // Not inside any site's fence. The geofence check further down would
-          // refuse this anyway, so fail here with something actionable rather
-          // than spending an ML round trip first.
-          const closest = await nearestSite(latitude, longitude);
-          return res.status(403).json({
-            error: closest
-              ? `You're ${closest.distanceMeters}m from ${closest.name}, which is too far to clock in. ` +
-                'Please move closer to your site and try again.'
-              : 'You do not appear to be at any Radiance site. Please check your location settings.',
-            code: 'NOT_AT_ANY_SITE',
-          });
-        }
-      }
+      // from the device — it is derived from the coordinates. That keeps the
+      // benefit that mattered: comparing against a couple of hundred
+      // candidates instead of all 4,000 is both faster and materially more
+      // accurate, because every extra enrolled face is another chance for a
+      // false match.
+      const { siteIds: scopedSiteIds } = await resolveScanSite({
+        latitude, longitude, accuracy, verb: 'clock in', requireSite: true,
+      });
 
       const { matchedEmployee, confidence, margin, livenessScore } = await identifyAndVerify(
         frames,

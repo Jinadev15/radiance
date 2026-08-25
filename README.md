@@ -138,8 +138,17 @@ are normal — a lunch break, a second shift, or simply tapping the wrong button
 and correcting it.
 
 **Security controls fail closed.** No site assigned means no clock-in, not an
-unchecked one. A face match too close to call is refused, not guessed. A roster
-cache whose version cannot be confirmed is rebuilt, not trusted.
+unchecked one. No usable GPS fix means no clock-in either. A face match too
+close to call is refused, not guessed. A roster cache whose version cannot be
+confirmed is rebuilt, not trusted.
+
+**Being at the site is checked twice, for different reasons.** Before any ML
+work, the scan's coordinates must resolve to a site — this is cheap, and it
+keeps the most expensive operation in the system out of reach of anyone who
+merely finds the public scanner URL. Then, after the face is matched, the
+geofence is measured against *that employee's own* site. The first check asks
+"are you at a Radiance site?"; only the second decides attendance, which is
+why standing at a real site you are not assigned to still refuses.
 
 **National ID numbers are never stored in full** — only a keyed HMAC (for
 uniqueness) plus the last four digits (for HR to eyeball), with Verhoeff

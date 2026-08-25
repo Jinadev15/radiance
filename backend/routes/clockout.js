@@ -6,7 +6,7 @@ const { identifyAndVerify } = require('../utils/identifyAndVerify');
 const engine = require('../utils/attendanceEngine');
 const { businessTime, DEFAULT_TZ } = require('../utils/tz');
 const { requireKioskDevice } = require('../middleware/kiosk');
-const { sitesAtLocation } = require('../utils/siteResolver');
+const { resolveScanSite } = require('../utils/siteResolver');
 
 // POST /api/v1/clock-out — Employee clock out
 router.post('/',
@@ -34,16 +34,14 @@ router.post('/',
       const timeZone = DEFAULT_TZ;
       const { at } = engine.resolveCaptureTime(capturedAt);
 
-      // Same GPS-derived site scoping as clock-in: match against the people
-      // assigned here rather than all 4,000. Unlike clock-in this does not
-      // refuse when no site matches — someone whose GPS has drifted still
-      // needs to be able to close their session, and the geofence check below
-      // is what actually decides.
-      let scopedSiteIds = null;
-      if (latitude !== undefined && latitude !== null && longitude !== undefined && longitude !== null) {
-        const here = await sitesAtLocation(latitude, longitude);
-        if (here.length > 0) scopedSiteIds = here.map(s => s._id);
-      }
+      // Same gate as clock-in, with one deliberate difference: requireSite is
+      // false. Someone mid-shift at a site HR has just deactivated, or whose
+      // fix has drifted just outside the fence, still has to be able to close
+      // their session — and enforceGeofence below checks their own site
+      // either way, so a clock-out from home is still refused.
+      const { siteIds: scopedSiteIds } = await resolveScanSite({
+        latitude, longitude, accuracy, verb: 'clock out', requireSite: false,
+      });
 
       const { matchedEmployee, confidence } = await identifyAndVerify(
         frames,

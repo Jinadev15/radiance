@@ -462,3 +462,256 @@ test('flagged scans are listed for review, unflagged ones are not', async () => 
   assert.deepEqual(rows[0].locationFlags, ['IMPLAUSIBLE_ACCURACY']);
   assert.equal(rows[0].clockInAccuracyMeters, 0.4);
 });
+
+// ---------------------------------------------------------------------------
+// The location gate, which runs before any ML work
+// ---------------------------------------------------------------------------
+
+async function gateRejects(params, code) {
+  await assert.rejects(
+    () => siteResolver.resolveScanSite({ verb: 'clock in', ...params }),
+    (err) => {
+      assert.equal(err.isServiceError, true, 'must be a service error the route can return');
+      assert.equal(err.status, 403);
+      assert.equal(err.code, code);
+      assert.ok(err.error && err.error.length > 20, 'the message must tell the person what to do');
+      return true;
+    }
+  );
+}
+
+test('a scan with no coordinates at all is refused before any ML work', async () => {
+  await makeSite();
+  // The important part is that this throws rather than falling through to a
+  // face match against all 4,000 — the scanner URL is public, so this is the
+  // most expensive thing an anonymous caller could otherwise trigger in a loop.
+  await gateRejects({ latitude: undefined, longitude: undefined }, 'LOCATION_REQUIRED');
+  await gateRejects({ latitude: null, longitude: null }, 'LOCATION_REQUIRED');
+});
+
+test('half a fix is no fix', async () => {
+  await makeSite();
+  await gateRejects({ latitude: ANNA_NAGAR.latitude, longitude: null }, 'LOCATION_REQUIRED');
+  await gateRejects({ latitude: null, longitude: ANNA_NAGAR.longitude }, 'LOCATION_REQUIRED');
+});
+
+test('coordinates that are not numbers are refused, not coerced', async () => {
+  await makeSite();
+  await gateRejects({ latitude: 'thirteen', longitude: '80.21' }, 'LOCATION_REQUIRED');
+  await gateRejects({ latitude: NaN, longitude: NaN }, 'LOCATION_REQUIRED');
+});
+
+test('a fix too imprecise to prove presence is refused', async () => {
+  await makeSite();
+  // A cell-tower estimate whose centre happens to land on the site says
+  // nothing about where the person actually is.
+  await gateRejects({
+    latitude: ANNA_NAGAR.latitude, longitude: ANNA_NAGAR.longitude, accuracy: 3000,
+  }, 'LOCATION_TOO_IMPRECISE');
+});
+
+test('an ordinary indoor fix is accepted, not treated as too imprecise', async () => {
+  const site = await makeSite();
+  // 80 m is normal inside a building, and refusing it would lock out honest
+  // workers scanning in a basement or a metal warehouse at 6 AM.
+  const { siteIds } = await siteResolver.resolveScanSite({
+    latitude: ANNA_NAGAR.latitude, longitude: ANNA_NAGAR.longitude,
+    accuracy: 80, verb: 'clock in',
+  });
+  assert.equal(siteIds.length, 1);
+  assert.equal(String(siteIds[0]), String(site._id));
+});
+
+test('a scan with no accuracy reported still passes the gate', async () => {
+  const site = await makeSite();
+  // Some browsers omit it. The geofence still has to pass, and locationTrust
+  // records the omission — but it is not grounds to refuse attendance.
+  const { siteIds } = await siteResolver.resolveScanSite({
+    latitude: ANNA_NAGAR.latitude, longitude: ANNA_NAGAR.longitude, verb: 'clock in',
+  });
+  assert.equal(String(siteIds[0]), String(site._id));
+});
+
+test('clocking in from outside every fence is refused with the distance', async () => {
+  await makeSite();
+  await assert.rejects(
+    () => siteResolver.resolveScanSite({
+      latitude: ANNA_NAGAR.latitude + 0.01, longitude: ANNA_NAGAR.longitude,
+      accuracy: 20, verb: 'clock in', requireSite: true,
+    }),
+    (err) => {
+      assert.equal(err.code, 'NOT_AT_ANY_SITE');
+      assert.match(err.error, /Anna Nagar Site/, 'must name the nearest site');
+      assert.match(err.error, /\d+m/, 'must say how far away they are');
+      return true;
+    }
+  );
+});
+
+test('clocking out from outside every fence is allowed past the gate', async () => {
+  await makeSite();
+  // Deliberate: someone mid-shift at a site HR has just deactivated, or whose
+  // fix has drifted a little outside, still has to be able to close their
+  // session. enforceGeofence checks their own site afterwards, so a clock-out
+  // from home is still refused — just not here.
+  const { siteIds } = await siteResolver.resolveScanSite({
+    latitude: ANNA_NAGAR.latitude + 0.01, longitude: ANNA_NAGAR.longitude,
+    accuracy: 20, verb: 'clock out', requireSite: false,
+  });
+  assert.equal(siteIds, null, 'no site scope, so matching falls back to the full roster');
+});
+
+test('clock-out still refuses a missing or useless fix', async () => {
+  await makeSite();
+  // requireSite: false relaxes *where*, never *whether*.
+  await gateRejects({ latitude: null, longitude: null, verb: 'clock out', requireSite: false },
+    'LOCATION_REQUIRED');
+  await gateRejects({
+    latitude: ANNA_NAGAR.latitude, longitude: ANNA_NAGAR.longitude,
+    accuracy: 5000, verb: 'clock out', requireSite: false,
+  }, 'LOCATION_TOO_IMPRECISE');
+});
+
+test('a site that has been deactivated stops accepting clock-ins', async () => {
+  await makeSite({ isActive: false });
+  await gateRejects({
+    latitude: ANNA_NAGAR.latitude, longitude: ANNA_NAGAR.longitude, accuracy: 20,
+  }, 'NOT_AT_ANY_SITE');
+});
+
+test('the gate still answers sensibly when no sites exist at all', async () => {
+  await assert.rejects(
+    () => siteResolver.resolveScanSite({
+      latitude: ANNA_NAGAR.latitude, longitude: ANNA_NAGAR.longitude,
+      accuracy: 20, verb: 'clock in',
+    }),
+    (err) => {
+      assert.equal(err.code, 'NOT_AT_ANY_SITE');
+      // No nearest site to name — must not render "undefined" at the employee.
+      assert.doesNotMatch(err.error, /undefined|null|NaN/);
+      return true;
+    }
+  );
+});
+
+test('null island is not inside a Chennai geofence', async () => {
+  await makeSite();
+  // A phone with a broken GPS reporting 0,0 is in range per the schema, so
+  // this has to be refused by distance rather than by validation.
+  await gateRejects({ latitude: 0, longitude: 0, accuracy: 20 }, 'NOT_AT_ANY_SITE');
+});
+
+test('standing between two overlapping sites scopes to both', async () => {
+  await makeSite({ name: 'Campus Block A', radiusMeters: 200 });
+  await makeSite({
+    name: 'Campus Block B',
+    latitude: ANNA_NAGAR.latitude + 0.0003,
+    longitude: ANNA_NAGAR.longitude,
+    radiusMeters: 200,
+  });
+  const { siteIds, sites } = await siteResolver.resolveScanSite({
+    latitude: ANNA_NAGAR.latitude, longitude: ANNA_NAGAR.longitude,
+    accuracy: 20, verb: 'clock in',
+  });
+  assert.equal(siteIds.length, 2);
+  assert.equal(sites[0].name, 'Campus Block A', 'nearest first');
+});
+
+test('the whole gate costs at most two queries even when it refuses', async () => {
+  for (let i = 0; i < 30; i += 1) {
+    await makeSite({ name: `Site ${i}`, latitude: 13 + i * 0.01, longitude: 80.2 });
+  }
+  // Refusal is the path an attacker can drive in a loop, so it is the one
+  // that must stay cheap: one scan for the fences, one for the nearest site.
+  const { count } = await db.countQueries(async () => {
+    try {
+      await siteResolver.resolveScanSite({
+        latitude: 20, longitude: 90, accuracy: 20, verb: 'clock in',
+      });
+    } catch { /* expected */ }
+  });
+  assert.ok(count <= 2, `expected at most 2 queries, got ${count}`);
+});
+
+// ---------------------------------------------------------------------------
+// The geofence itself — the gate scopes matching, this decides attendance
+// ---------------------------------------------------------------------------
+
+test("being at a real site is not the same as being at your own", async () => {
+  const mySite = await makeSite({ name: 'Anna Nagar Site' });
+  const otherSite = await makeSite({ name: 'Velachery Site', latitude: 12.9756, longitude: 80.2207 });
+  const employee = await makeEmployee({ workLocation: mySite._id });
+  employee.workLocation = mySite;
+
+  // Standing at Velachery. The gate would happily scope to Velachery — it is
+  // a real site — so the geofence is what has to refuse this, and it does,
+  // because it measures against the employee's *own* site.
+  assert.throws(
+    () => engine.enforceGeofence(employee, otherSite.latitude, otherSite.longitude, 'clock in'),
+    (err) => {
+      assert.equal(err.status, 403);
+      assert.equal(err.code, 'OUTSIDE_GEOFENCE');
+      assert.match(err.error, /Anna Nagar Site/);
+      return true;
+    }
+  );
+});
+
+test('an employee with no site assigned is refused, not waved through', async () => {
+  const employee = await makeEmployee();
+  employee.workLocation = null;
+  assert.throws(
+    () => engine.enforceGeofence(employee, ANNA_NAGAR.latitude, ANNA_NAGAR.longitude, 'clock in'),
+    (err) => {
+      assert.equal(err.code, 'NO_SITE_ASSIGNED');
+      return true;
+    }
+  );
+});
+
+test('the geofence refuses a missing fix even if the gate somehow let one past', async () => {
+  const site = await makeSite();
+  const employee = await makeEmployee({ workLocation: site._id });
+  employee.workLocation = site;
+  for (const [lat, lon] of [[null, null], [undefined, undefined], ['x', 'y']]) {
+    assert.throws(
+      () => engine.enforceGeofence(employee, lat, lon, 'clock in'),
+      (err) => { assert.equal(err.code, 'LOCATION_REQUIRED'); return true; }
+    );
+  }
+});
+
+test('just inside the radius is accepted, just outside is refused', async () => {
+  const site = await makeSite({ radiusMeters: 150 });
+  const employee = await makeEmployee({ workLocation: site._id });
+  employee.workLocation = site;
+
+  // ~111 m north — comfortably inside.
+  const inside = engine.enforceGeofence(
+    employee, ANNA_NAGAR.latitude + 0.001, ANNA_NAGAR.longitude, 'clock in');
+  assert.ok(inside.distanceMeters < 150);
+
+  // ~222 m north — outside.
+  assert.throws(
+    () => engine.enforceGeofence(employee, ANNA_NAGAR.latitude + 0.002, ANNA_NAGAR.longitude, 'clock in'),
+    (err) => {
+      assert.equal(err.code, 'OUTSIDE_GEOFENCE');
+      assert.match(err.error, /150m/, 'must tell them how close they need to be');
+      return true;
+    }
+  );
+});
+
+test('clocking out is geofenced too, so hours cannot be extended from home', async () => {
+  const site = await makeSite();
+  const employee = await makeEmployee({ workLocation: site._id });
+  employee.workLocation = site;
+  assert.throws(
+    () => engine.enforceGeofence(employee, ANNA_NAGAR.latitude + 0.05, ANNA_NAGAR.longitude, 'clock out'),
+    (err) => {
+      assert.equal(err.code, 'OUTSIDE_GEOFENCE');
+      assert.match(err.error, /clock out/);
+      return true;
+    }
+  );
+});

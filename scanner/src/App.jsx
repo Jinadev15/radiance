@@ -180,6 +180,7 @@ function App() {
         <FaceCapture
           onCapture={handleFaceCapture}
           onBack={faceCaptureBack}
+          requireLocation={actionType === 'clock-in' || actionType === 'clock-out'}
         />
       )}
 
