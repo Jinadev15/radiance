@@ -28,6 +28,21 @@ Do these **in order** — later steps need URLs/values produced by earlier ones.
 
 ## 2. Render (backend + face-recognition service)
 
+> **This deployment's live URLs** (the walkthrough below uses placeholder
+> names, which is what to expect on a fresh setup — these are the real ones):
+>
+> | What | URL |
+> |---|---|
+> | Scanner (employees open this on their phone) | https://radiance-app-beta.vercel.app |
+> | Dashboard (HR / admin) | https://radiance-app.vercel.app |
+> | Backend | https://radiance-backend-kppd.onrender.com |
+> | ML service | https://radiance-ml-service.onrender.com |
+>
+> Note the Vercel naming is misleading: the `radiance-app` project's default
+> domains serve the **dashboard**, and only its `-beta` alias serves the
+> **scanner**. Health checks are `/api/v1/health` on the backend and
+> `/health` on the ML service.
+
 1. Go to https://render.com and sign up (use "Sign up with GitHub" — makes the next step easier).
 2. Click **New +** → **Blueprint**.
 3. Connect your GitHub account if asked, then select this repository. Render will find the `render.yaml` file at the root and detect **two services**: `radiance-backend` and `radiance-ml-service`.

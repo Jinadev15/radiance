@@ -748,22 +748,31 @@ EMP-003 is, and for ID cards. Decide deliberately: add an optional stored
 photo (with its own consent line and retention rule), or explain why you
 don't. Either is defensible; not having thought about it isn't.
 
-## C4. The kiosk URL is open to the entire internet 🟠 HIGH
+## C4. The scanner URL is open to the entire internet ✅ RESOLVED — now by design
 
-`radiance-app-beta.vercel.app` is public. Anyone can open it, register
-themselves as a Radiance employee, and clock in. The only barriers are the
-geofence — inert for self-registered users (A5) — and liveness.
+`radiance-app-beta.vercel.app` is public and stays that way. Employees scan
+from their own phones, so there is no fixed device to authenticate and no
+secret worth distributing: a token handed to 4,000 people is not a token.
+The original fix proposed here (a per-site device token) was built, then
+removed, because it assumed a tablet that no longer exists.
 
-**Fix:**
+What a stranger who finds the URL can actually do is now bounded:
 
-1. Require a device token: a per-site secret in the kiosk's environment, sent
-   as a header and validated by the backend. An unregistered device gets
-   nothing.
-2. Add Vercel password protection or an IP allowlist to the scanner deployment
-   as a quick immediate win.
-3. Move registration behind HR approval regardless (see the todo list) — a
-   registration should create a **pending** profile that can't clock in until
-   approved.
+- **Clock in?** No. It needs a face enrolled *and* HR-approved
+  (`Employee.matchableFilter`), inside a site geofence measured against that
+  employee's own site.
+- **Register?** Yes — and it creates a `PENDING_APPROVAL` profile that
+  cannot clock in until a human in HR confirms the person works here. That
+  approval step is also exactly the "HR concurrence" the owner asked for.
+- **Burn compute?** No. The location gate (`utils/siteResolver.js` —
+  `resolveScanSite`) runs before any ML work, so a scan with no fix, a
+  useless fix, or a position outside every site costs two indexed queries
+  rather than two ML round trips.
+
+What remains, honestly: a real employee can scan their real face from
+somewhere other than their site if they spoof GPS, and self-registration
+spam can fill the approval queue. The first is covered under blocker 3
+above; the second is rate-limited (15/min) and visible to HR.
 
 ## C5. The JWT sits in localStorage 🟡 MEDIUM
 
