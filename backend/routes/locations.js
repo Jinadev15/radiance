@@ -13,13 +13,13 @@ const { requireKioskDevice } = require('../middleware/kiosk');
 // below — and it needs a real site list, because self-registration requiring
 // a site (see routes/register.js) is what closes the hole where every
 // self-registered employee had no geofence and no late detection at all.
-// Gated by the same kiosk-device check as the scanning endpoints rather than
-// left fully open, even though a list of site names is low-sensitivity.
+// Employees register from their own phones, so there is no bound kiosk to
+// narrow this to a single site — the full active list is offered and the
+// person picks where they work. Names only; coordinates and radii stay
+// private so the list can't be used to find a geofence to stand outside of.
 router.get('/public', requireKioskDevice, async (req, res) => {
   try {
-    const filter = { isActive: true };
-    if (req.kioskSiteId) filter._id = req.kioskSiteId; // a bound kiosk only offers its own site
-    const locations = await WorkLocation.find(filter).select('name').sort({ name: 1 });
+    const locations = await WorkLocation.find({ isActive: true }).select('name').sort({ name: 1 });
     res.json(locations);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch sites' });

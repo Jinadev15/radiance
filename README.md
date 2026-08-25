@@ -1,8 +1,8 @@
 # Radiance — Face Recognition Attendance System
 
 Attendance and payroll-hours tracking for a facility management company:
-employees clock in and out at a site kiosk by face, and HR manages the roster,
-leave, and payroll exports from a dashboard.
+employees clock in and out by face from their own phones, and HR manages the
+roster, leave, and payroll exports from a dashboard.
 
 Built for ~4,000 employees across ~126 client sites, where the largest single
 site has around 200 people and shifts often start before sunrise.
@@ -11,11 +11,14 @@ site has around 200 people and shifts often start before sunrise.
 
 ## What it does
 
-**At the site (kiosk):**
-- Clock in / out by face — no cards, no PINs, nothing to lose or share
-- Anti-spoofing: two frames captured ~450 ms apart, checked for the natural
-  movement a held-up printed photo cannot produce
-- Geofenced — a scan is only accepted within the site's radius
+**On the employee's phone:**
+- Clock in / out by face — no cards, no PINs, no shared tablet to queue at
+- Anti-spoofing: a trained passive model runs on every scan, so a photo or a
+  video of a colleague played on another phone is rejected
+- Geofenced — a scan is only accepted inside a site's radius, and the site
+  itself is derived from the phone's GPS
+- One phone cannot hold two people clocked in at once, so a single handset
+  cannot walk the floor clocking in a whole shift
 - Self-registration with consent capture, held for HR approval
 - Works offline: scans queue on the device and replay with their *original*
   capture time when the connection returns
@@ -23,7 +26,7 @@ site has around 200 people and shifts often start before sunrise.
 
 **In the dashboard:**
 - Live attendance, per-site breakdown, and trends
-- Employee roster with an approval queue for kiosk self-registrations
+- Employee roster with an approval queue for self-registrations
 - Leave requests and a per-site holiday calendar
 - Regularization: an employee reports a missed scan, HR approves, and the
   attendance record is corrected in the same action
@@ -39,14 +42,15 @@ site has around 200 people and shifts often start before sunrise.
 | Piece | Stack | Role |
 |---|---|---|
 | `frontend/` | Next.js + TypeScript | HR/Admin/Supervisor dashboard |
-| `scanner/` | React + Vite | Kiosk app employees scan at |
+| `scanner/` | React + Vite | The page employees open on their phone |
 | `backend/` | Node + Express + Mongoose | All business logic and authorisation |
 | `ml-service/` | Python + FastAPI + ONNX Runtime | Face detection, embedding, liveness |
 | database | MongoDB | Employees, attendance, leave, audit |
 
 ### How a clock-in works
 
-1. Kiosk captures two frames and posts them with GPS and the capture time
+1. The phone captures two frames and posts them with GPS, GPS accuracy, an
+   anonymous device id, and the capture time
 2. Backend asks the ML service for a face embedding
 3. The ML service matches it against its **resident roster cache** — the
    embeddings live in its memory, so a scan sends only the probe vector
@@ -55,6 +59,11 @@ site has around 200 people and shifts often start before sunrise.
 5. Backend re-checks the matched employee against the database (the database,
    not the cache, is the authority on who may clock in), enforces the geofence,
    then opens or closes an attendance session
+
+The GPS is used before step 2, not just for the geofence: the coordinates
+resolve to a site, and matching is scoped to that site's roster (~200 people)
+rather than all 4,000. Fewer candidates is both faster and materially less
+likely to produce a false match.
 
 ### Face recognition
 
@@ -85,7 +94,7 @@ cd backend && npm install && cp .env.example .env && npm run dev
 # Dashboard
 cd frontend && npm install && npm run dev
 
-# Kiosk
+# Scanner (the page employees open on their phone)
 cd scanner && npm install && npm run dev
 ```
 
@@ -137,7 +146,7 @@ uniqueness) plus the last four digits (for HR to eyeball), with Verhoeff
 checksum validation to catch typos at entry.
 
 **`/api/v1/health` reports what each dependency actually believes** — database,
-ML service, roster cache version, SMTP, kiosk auth — rather than just "the
+ML service, roster cache version, SMTP, scanner model — rather than just "the
 process is running". It has caught two production bugs that were otherwise
 completely silent.
 

@@ -33,7 +33,9 @@ const CANDIDATE_FIELDS = 'name employeeId faceEmbeddings workLocation shiftTempl
  * @param {string[]} images   1..3 base64 frames (2 required for a real liveness check)
  * @param {'CLOCK_IN'|'CLOCK_OUT'} action  used only to label a spoof log entry
  * @param {object} [options]
- * @param {string} [options.workLocationId]  restrict candidates to one site.
+ * @param {ObjectId[]} [options.workLocationIds]  restrict candidates to these
+ *        sites, nearest first. Derived from the scan's GPS — overlapping
+ *        geofences mean a point can legitimately belong to more than one.
  *        This is both an accuracy and a speed win: a worker at one site only
  *        ever needs matching against that site's roster, which cuts the
  *        candidate pool (and therefore the chance of a false match) by however
@@ -44,7 +46,7 @@ const CANDIDATE_FIELDS = 'name employeeId faceEmbeddings workLocation shiftTempl
  * from the catch block.
  */
 async function identifyAndVerify(images, action, options = {}) {
-  const { workLocationId = null, requireLiveness = true } = options;
+  const { workLocationIds = null, requireLiveness = true } = options;
 
   if (!Array.isArray(images) || images.length === 0) {
     throw ml.serviceError(400, 'Face image is required', 'NO_IMAGE');
@@ -69,7 +71,7 @@ async function identifyAndVerify(images, action, options = {}) {
   //    guaranteed out-of-memory crash at a shift change. The roster now lives
   //    in the ML service (see utils/rosterCache.js) and a scan carries only
   //    the probe vector.
-  const matchResult = await identifyAgainstCache(embedding, workLocationId);
+  const matchResult = await identifyAgainstCache(embedding, workLocationIds);
 
   if (!matchResult || !matchResult.match || !matchResult.matched_id) {
     // An ambiguous result is a different problem from an unknown face, and
@@ -108,9 +110,12 @@ async function identifyAndVerify(images, action, options = {}) {
     throw ml.serviceError(404, 'Face not recognized. Please register first.', 'NO_MATCH');
   }
 
-  // A site-scoped kiosk must never clock in someone who belongs elsewhere,
-  // even if the cache's site index somehow disagreed with the database.
-  if (workLocationId && String(matchedEmployee.workLocation?._id) !== String(workLocationId)) {
+  // Someone whose profile belongs to a different site must never be clocked
+  // in here, even if the cache's site index somehow disagreed with the
+  // database. `workLocationIds` is the set of sites this GPS position falls
+  // inside — legitimately more than one where sites overlap on a campus.
+  const scoped = workLocationIds ? workLocationIds.map(String) : null;
+  if (scoped && !scoped.includes(String(matchedEmployee.workLocation?._id))) {
     console.warn(
       '[IdentifyAndVerify] %s matched at a site they are not assigned to — refusing.',
       matchedEmployee.employeeId
@@ -165,21 +170,28 @@ async function identifyAndVerify(images, action, options = {}) {
  * it can't confirm, so "stale" is never silently treated as "no match" — that
  * would let a deactivated employee keep clocking in after an ML restart.
  */
-async function identifyAgainstCache(embedding, workLocationId) {
-  let result = await ml.recogniseCached(embedding, {
-    siteId: workLocationId,
-    version: rosterCache.version(),
-  });
+async function identifyAgainstCache(embedding, workLocationIds) {
+  // The cache indexes one site at a time. Where a position falls inside
+  // several overlapping sites, each is tried in turn (nearest first) rather
+  // than silently widening to the whole company.
+  const siteIds = workLocationIds && workLocationIds.length ? workLocationIds.map(String) : [null];
+
+  let result = null;
+  for (const siteId of siteIds) {
+    result = await ml.recogniseCached(embedding, { siteId, version: rosterCache.version() });
+    if (result && result.cache_stale) break;      // handled below
+    if (result && result.match) return result;    // found them
+  }
 
   if (result && result.cache_stale) {
     // Either the ML service restarted (cold start wipes its memory) or the
     // roster changed. Push it and retry exactly once — a retry loop here would
     // turn one bad sync into an outage at a shift change.
     await rosterCache.sync({ force: true });
-    result = await ml.recogniseCached(embedding, {
-      siteId: workLocationId,
-      version: rosterCache.version(),
-    });
+    for (const siteId of siteIds) {
+      result = await ml.recogniseCached(embedding, { siteId, version: rosterCache.version() });
+      if (result && (result.cache_stale || result.match)) break;
+    }
 
     if (result && result.cache_stale) {
       throw ml.serviceError(
@@ -195,7 +207,7 @@ async function identifyAgainstCache(embedding, workLocationId) {
   if (result && (result.reason === 'cache_empty' || result.reason === 'no_candidates_at_site')) {
     throw ml.serviceError(
       404,
-      workLocationId
+      siteIds[0]
         ? 'No approved employees are enrolled at this site yet. Please ask HR.'
         : 'No registered employees found. Please register first.',
       'NO_CANDIDATES'

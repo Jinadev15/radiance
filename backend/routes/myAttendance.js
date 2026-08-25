@@ -16,9 +16,10 @@ router.post('/', requireKioskDevice, async (req, res) => {
     if (frames.length === 0) return res.status(400).json({ error: 'Face image is required' });
     if (mongoose.connection.readyState !== 1) return res.status(503).json({ error: 'Database unavailable' });
 
-    const { matchedEmployee } = await identifyAndVerify(frames, 'CLOCK_IN', {
-      workLocationId: req.kioskSiteId || null,
-    });
+    // Matched against the whole roster rather than one site: someone
+    // checking their own attendance is very often not at their site when
+    // they do it.
+    const { matchedEmployee } = await identifyAndVerify(frames, 'CLOCK_IN', {});
 
     const cutoff = recentBusinessDates(7, DEFAULT_TZ).slice(-1)[0];
     const logs = await AttendanceLog.find({ employee: matchedEmployee._id, date: { $gte: cutoff } })

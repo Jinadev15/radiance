@@ -1,102 +1,71 @@
-// Per-device kiosk credentials.
+// A stable, anonymous identifier for this phone.
 //
-// The obvious approach — put the token in a VITE_ environment variable — does
-// not work as security. Vite inlines those into the JavaScript bundle at build
-// time, so the "secret" ships to every visitor and anyone who opens the page
-// can read it out of the source. That is obfuscation, not authentication.
+// Employees clock in from their own handsets, so there is nothing to
+// provision and no shared secret worth distributing — a token handed to
+// 4,000 people is not a token. Identity is proved by the face; location by
+// GPS. This value only answers "which phone was this scan taken on".
 //
-// Instead each tablet is provisioned once, by opening a setup link:
+// It is explicitly NOT a credential. Anyone can clear it, and anyone can
+// forge one. It earns its place for two things:
+//   1. One phone cannot hold two people clocked in at the same time, so a
+//      single handset can't walk the floor clocking in colleagues from
+//      photos of them (backend/utils/attendanceEngine.assertDeviceFree).
+//   2. "Eleven people scanned from one device today" becomes visible to HR
+//      instead of invisible.
 //
-//   https://<kiosk-url>/?setup=<token>&site=<siteId>
-//
-// The credentials are written to this device's localStorage, the query string
-// is scrubbed from the address bar and from history, and the token never
-// appears in the bundle. A visitor who simply finds the kiosk URL gets an
-// unprovisioned device and cannot scan.
-//
-// This is still a shared secret sitting in a browser — someone with physical
-// access to an unlocked tablet can read it. It stops remote and casual abuse,
-// which is the actual exposure for a public URL. Rotating a token means
-// re-opening the setup link on that tablet.
-const TOKEN_KEY = 'radiance_kiosk_token';
-const SITE_KEY = 'radiance_kiosk_site';
+// Storage is best-effort. A phone in private browsing, or with storage
+// blocked, simply scans without an id — that degrades the two checks above
+// rather than locking an employee out of their own attendance.
+const DEVICE_KEY = 'radiance_device_id';
 
-function readSetupFromUrl() {
-  try {
-    const params = new URLSearchParams(window.location.search);
-    const token = params.get('setup');
-    const site = params.get('site');
-    if (!token) return null;
-    return { token: token.trim(), site: (site || '').trim() || null };
-  } catch {
-    return null;
+// Matches backend/middleware/kiosk.js DEVICE_ID_PATTERN. Kept URL-safe so it
+// survives being logged, indexed and shown in the dashboard unescaped.
+const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-';
+
+function generateId() {
+  const bytes = new Uint8Array(24);
+  // crypto.getRandomValues is available on every browser that can also run
+  // getUserMedia, so the Math.random fallback is unreachable in practice —
+  // it exists so an insecure-context dev server doesn't hard-crash.
+  if (globalThis.crypto && globalThis.crypto.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
   }
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 1) out += ALPHABET[bytes[i] % ALPHABET.length];
+  return out;
 }
 
-function scrubUrl() {
-  // replaceState, not pushState — the setup link must not be reachable with
-  // the back button, and must not linger in the address bar of a device
-  // sitting in a corridor all day.
-  try {
-    window.history.replaceState({}, document.title, window.location.pathname);
-  } catch {
-    /* non-fatal: the credentials are already stored */
-  }
-}
+let cached = null;
 
 /**
- * Consume a setup link if one is present. Call once at startup, before the
- * first API request.
- * @returns {boolean} true if this call provisioned the device
+ * This phone's id, creating and persisting one on first use.
+ * @returns {string|null} null only when storage is unavailable.
  */
-export function provisionFromUrl() {
-  const setup = readSetupFromUrl();
-  if (!setup) return false;
+export function deviceId() {
+  if (cached) return cached;
   try {
-    localStorage.setItem(TOKEN_KEY, setup.token);
-    if (setup.site) localStorage.setItem(SITE_KEY, setup.site);
-    else localStorage.removeItem(SITE_KEY);
-    scrubUrl();
-    return true;
+    const existing = localStorage.getItem(DEVICE_KEY);
+    if (existing && /^[A-Za-z0-9_-]{8,64}$/.test(existing)) {
+      cached = existing;
+      return cached;
+    }
+    const fresh = generateId();
+    localStorage.setItem(DEVICE_KEY, fresh);
+    cached = fresh;
+    return cached;
   } catch {
-    // Private-browsing or storage-disabled: the device cannot be provisioned,
-    // and isProvisioned() below will report that honestly rather than letting
-    // it fail later on every scan.
-    return false;
-  }
-}
-
-export function kioskToken() {
-  try {
-    return localStorage.getItem(TOKEN_KEY);
-  } catch {
+    // Private browsing or storage disabled. Deliberately not falling back to
+    // an in-memory id: that would be a *different* device on every page load,
+    // which is worse than none — it would make the "two people on one phone"
+    // check silently useless while looking like it worked.
     return null;
   }
 }
 
-export function kioskSiteId() {
-  try {
-    return localStorage.getItem(SITE_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export function isProvisioned() {
-  return Boolean(kioskToken());
-}
-
-/** Headers identifying this device. Empty when unprovisioned. */
+/** Headers identifying this phone. */
 export function deviceHeaders() {
-  const headers = {};
-  const token = kioskToken();
-  const site = kioskSiteId();
-  if (token) headers['X-Kiosk-Token'] = token;
-  if (site) headers['X-Kiosk-Site'] = site;
-  return headers;
-}
-
-/** Used by the setup screen so an installer can confirm the right site. */
-export function deviceSummary() {
-  return { provisioned: isProvisioned(), siteId: kioskSiteId() };
+  const id = deviceId();
+  return id ? { 'X-Device-Id': id } : {};
 }

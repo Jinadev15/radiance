@@ -1149,24 +1149,35 @@ separately in `DEPLOYMENT.md`.
 **1. Nobody has scanned a real face yet.**
 Every accuracy figure in this document comes from LFW — public celebrity
 photographs, with dim and blurry conditions *simulated*. Not one actual
-Radiance employee has scanned at an actual kiosk in actual 6 AM light. The
+Radiance employee has scanned on their own phone in actual 6 AM light. The
 model comparison is sound (both models got identical inputs), but the
 absolute numbers will move. This is the single biggest unknown and only a
 pilot resolves it.
 
-**2. Kiosk device tokens are still off** (`kiosk.configured: false`).
-The scanner is reachable by anyone who finds the URL, and without a site
-token every scan compares against all 4,000 employees instead of that
-site's ~200 — slower and measurably less accurate. Set `KIOSK_DEVICES` and
-`KIOSK_ENFORCE=true` per `DEPLOYMENT.md`.
+**2. Every site geofence is now load-bearing and none has been walked.**
+Employees scan from their own phones, so the site a scan belongs to is
+derived from its coordinates rather than from a device. A fence centred on a
+building's postal address instead of the gate where people actually stand
+will reject that whole site — and scans that resolve to no site are refused
+outright. Walk each site with a phone and check the recorded coordinates
+before go-live. This replaced the old kiosk-token scheme, which was never a
+real control: a token handed to 4,000 people is not a token.
 
-**3. Liveness is a heuristic, not a trained model.**
-Texture, glare, and inter-frame motion. It defeats a printed photo. It would
-probably *not* defeat a video of a colleague played on a phone — and
-buddy-punching is the main fraud this system exists to prevent. A passive
-anti-spoofing model (e.g. Silent-Face-Anti-Spoofing) is the real fix. Until
-then, every failure is logged and attributed, which is mitigation, not a
-solution.
+**3. A phone's reported location cannot be proven genuine.**
+Mock-location apps are a two-minute install on Android, and a web page
+cannot detect one the way a native app can via Play Integrity. Face
+recognition still proves *who* scanned, and anti-spoofing still defeats a
+photo or a replayed video — so the exposure is narrow: a real employee
+scanning their real face from somewhere other than their site.
+
+Three things mitigate it, none of which is proof:
+`utils/locationTrust.js` records the patterns a spoofed fix tends to leave
+(implausible accuracy, coordinates identical across days, travel too fast to
+be real); the shared-device report surfaces one handset used by several
+people; and both land on the attendance row for HR to review rather than
+blocking anyone — a false fraud accusation against an honest worker is worse
+than a missed one. A native app with attestation is the real fix if this
+turns out to matter in practice.
 
 **4. No error tracking.**
 Render's logs are ephemeral. A 500 in production currently leaves no trace to

@@ -6,6 +6,8 @@ const { identifyAndVerify } = require('../utils/identifyAndVerify');
 const engine = require('../utils/attendanceEngine');
 const { businessTime, businessDate, DEFAULT_TZ } = require('../utils/tz');
 const { requireKioskDevice } = require('../middleware/kiosk');
+const { sitesAtLocation, nearestSite } = require('../utils/siteResolver');
+const { assessLocation } = require('../utils/locationTrust');
 
 // POST /api/v1/clock-in — Employee clock in
 router.post('/',
@@ -15,13 +17,14 @@ router.post('/',
       .withMessage('capturedAt must be an ISO 8601 timestamp'),
     body('latitude').optional({ nullable: true }).isFloat({ min: -90, max: 90 }),
     body('longitude').optional({ nullable: true }).isFloat({ min: -180, max: 180 }),
+    body('accuracy').optional({ nullable: true }).isFloat({ min: 0 }),
   ],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(400).json({ error: errors.array()[0].msg });
 
     try {
-      const { images, image, latitude, longitude, capturedAt } = req.body;
+      const { images, image, latitude, longitude, accuracy, capturedAt } = req.body;
       // Accept a single legacy `image` too, normalised to the frames array.
       const frames = Array.isArray(images) ? images : (image ? [image] : []);
       if (frames.length === 0) return res.status(400).json({ error: 'Face image is required' });
@@ -34,11 +37,40 @@ router.post('/',
       // `at` is when the scan actually happened, which for a replayed offline
       // scan is not now. Validated inside the engine.
       const { at, source } = engine.resolveCaptureTime(capturedAt);
+      const deviceId = req.deviceId || null;
+
+      // Work out which site this scan is at from the GPS, and match faces only
+      // against the people assigned there.
+      //
+      // Employees scan from their own phones, so the site can no longer come
+      // from the device. Deriving it from coordinates keeps the benefit that
+      // mattered: comparing against a couple of hundred candidates instead of
+      // all 4,000 is both faster and materially more accurate, because every
+      // extra enrolled face is another chance for a false match.
+      let scopedSiteIds = null;
+      if (latitude !== undefined && latitude !== null && longitude !== undefined && longitude !== null) {
+        const here = await sitesAtLocation(latitude, longitude);
+        if (here.length > 0) {
+          scopedSiteIds = here.map(s => s._id);
+        } else {
+          // Not inside any site's fence. The geofence check further down would
+          // refuse this anyway, so fail here with something actionable rather
+          // than spending an ML round trip first.
+          const closest = await nearestSite(latitude, longitude);
+          return res.status(403).json({
+            error: closest
+              ? `You're ${closest.distanceMeters}m from ${closest.name}, which is too far to clock in. ` +
+                'Please move closer to your site and try again.'
+              : 'You do not appear to be at any Radiance site. Please check your location settings.',
+            code: 'NOT_AT_ANY_SITE',
+          });
+        }
+      }
 
       const { matchedEmployee, confidence, margin, livenessScore } = await identifyAndVerify(
         frames,
         'CLOCK_IN',
-        { workLocationId: req.kioskSiteId || null }
+        { workLocationIds: scopedSiteIds }
       );
 
       // Already clocked in? Report the existing session rather than opening a
@@ -64,7 +96,19 @@ router.post('/',
       const latest = await engine.findLatestSession(matchedEmployee._id, at);
       engine.assertNotDoubleTap(latest, at);
 
+      // One phone cannot hold two people clocked in at once. Face recognition
+      // already stops A clocking in as B; this stops one person clocking in a
+      // dozen colleagues from a single handset using their photos.
+      await engine.assertDeviceFree(deviceId, matchedEmployee._id, at);
+
       const geo = engine.enforceGeofence(matchedEmployee, latitude, longitude, 'clock in');
+
+      // Advisory only — recorded for HR, never used to refuse a scan. GPS is
+      // erratic indoors and a false fraud accusation against an honest worker
+      // is worse than a missed one.
+      const { flags: locationFlags, notes: locationNotes } = await assessLocation({
+        latitude, longitude, accuracy, employeeId: matchedEmployee._id, at,
+      });
 
       const log = await engine.openSession({
         employee: matchedEmployee,
@@ -75,9 +119,13 @@ router.post('/',
         livenessScore,
         source,
         timeZone,
-        notes: source === 'OFFLINE_SYNC'
-          ? 'Recorded from an offline scan queued on the kiosk.'
-          : null,
+        deviceId,
+        accuracy: accuracy === undefined || accuracy === null ? null : Number(accuracy),
+        locationFlags,
+        notes: [
+          source === 'OFFLINE_SYNC' ? 'Recorded from an offline scan queued on the phone.' : null,
+          locationNotes,
+        ].filter(Boolean).join(' | ') || null,
       });
 
       const timeStr = businessTime(log.clockInTime, timeZone);

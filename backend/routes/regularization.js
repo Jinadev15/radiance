@@ -33,9 +33,10 @@ router.post('/',
       if (frames.length === 0) return res.status(400).json({ error: 'Face image is required to identify you' });
       if (mongoose.connection.readyState !== 1) return res.status(503).json({ error: 'Database unavailable' });
 
-      const { matchedEmployee } = await identifyAndVerify(frames, 'CLOCK_IN', {
-        workLocationId: req.kioskSiteId || null,
-      });
+      // Matched against the whole roster rather than one site: someone
+      // requesting a correction is very often not at their site when
+      // they do it.
+      const { matchedEmployee } = await identifyAndVerify(frames, 'CLOCK_IN', {});
 
       const requestDate = businessDate(new Date(date), DEFAULT_TZ);
       const today = businessDate(new Date(), DEFAULT_TZ);

@@ -1,17 +1,14 @@
 import { enqueue, isNetworkError, queueLength } from './offlineQueue';
-import { deviceHeaders, kioskSiteId } from './device';
+import { deviceHeaders } from './device';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
-// Identifies this device to the backend (see backend/middleware/kiosk.js).
-// Credentials come from this device's own storage, provisioned once via a
-// setup link — deliberately NOT from a VITE_ variable, which Vite would
-// inline into the bundle and ship to every visitor. See utils/device.js.
+// Tags each request with this phone's anonymous id (see utils/device.js and
+// backend/middleware/kiosk.js). Not a credential — the face is the
+// authentication and GPS is the location.
 function kioskHeaders() {
   return { 'Content-Type': 'application/json', ...deviceHeaders() };
 }
-
-export { kioskSiteId };
 
 // Note on the offline path: queuing stores the raw scan and replays it once
 // connectivity returns — actual face match / liveness / geofence verification
@@ -50,18 +47,18 @@ async function postWithOfflineFallback(endpoint, body, offlineMessage) {
 
 // images: array of 1-2 base64 frames captured a few hundred ms apart —
 // the second frame is what lets the backend check for real movement.
-export async function clockIn(images, latitude, longitude) {
+export async function clockIn(images, latitude, longitude, accuracy) {
   return postWithOfflineFallback(
     '/v1/clock-in',
-    { images, latitude, longitude },
+    { images, latitude, longitude, accuracy },
     "No connection right now — your scan is saved and will be verified automatically once we're back online."
   );
 }
 
-export async function clockOut(images, latitude, longitude) {
+export async function clockOut(images, latitude, longitude, accuracy) {
   return postWithOfflineFallback(
     '/v1/clock-out',
-    { images, latitude, longitude },
+    { images, latitude, longitude, accuracy },
     "No connection right now — your scan is saved and will be verified automatically once we're back online."
   );
 }

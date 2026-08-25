@@ -6,6 +6,7 @@ const { identifyAndVerify } = require('../utils/identifyAndVerify');
 const engine = require('../utils/attendanceEngine');
 const { businessTime, DEFAULT_TZ } = require('../utils/tz');
 const { requireKioskDevice } = require('../middleware/kiosk');
+const { sitesAtLocation } = require('../utils/siteResolver');
 
 // POST /api/v1/clock-out — Employee clock out
 router.post('/',
@@ -15,13 +16,14 @@ router.post('/',
       .withMessage('capturedAt must be an ISO 8601 timestamp'),
     body('latitude').optional({ nullable: true }).isFloat({ min: -90, max: 90 }),
     body('longitude').optional({ nullable: true }).isFloat({ min: -180, max: 180 }),
+    body('accuracy').optional({ nullable: true }).isFloat({ min: 0 }),
   ],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(400).json({ error: errors.array()[0].msg });
 
     try {
-      const { images, image, latitude, longitude, capturedAt } = req.body;
+      const { images, image, latitude, longitude, accuracy, capturedAt } = req.body;
       const frames = Array.isArray(images) ? images : (image ? [image] : []);
       if (frames.length === 0) return res.status(400).json({ error: 'Face image is required' });
 
@@ -32,10 +34,21 @@ router.post('/',
       const timeZone = DEFAULT_TZ;
       const { at } = engine.resolveCaptureTime(capturedAt);
 
+      // Same GPS-derived site scoping as clock-in: match against the people
+      // assigned here rather than all 4,000. Unlike clock-in this does not
+      // refuse when no site matches — someone whose GPS has drifted still
+      // needs to be able to close their session, and the geofence check below
+      // is what actually decides.
+      let scopedSiteIds = null;
+      if (latitude !== undefined && latitude !== null && longitude !== undefined && longitude !== null) {
+        const here = await sitesAtLocation(latitude, longitude);
+        if (here.length > 0) scopedSiteIds = here.map(s => s._id);
+      }
+
       const { matchedEmployee, confidence } = await identifyAndVerify(
         frames,
         'CLOCK_OUT',
-        { workLocationId: req.kioskSiteId || null }
+        { workLocationIds: scopedSiteIds }
       );
 
       // Most recent session within the clock-out window, open or closed — the
@@ -79,7 +92,10 @@ router.post('/',
 
       const geo = engine.enforceGeofence(matchedEmployee, latitude, longitude, 'clock out');
 
-      await engine.closeSession({ session, employee: matchedEmployee, at, geo, timeZone });
+      await engine.closeSession({
+        session, employee: matchedEmployee, at, geo, timeZone,
+        accuracy: accuracy === undefined || accuracy === null ? null : Number(accuracy),
+      });
       const totals = await engine.dayTotals(matchedEmployee._id, session.date);
 
       const outTimeStr = businessTime(session.clockOutTime, timeZone);

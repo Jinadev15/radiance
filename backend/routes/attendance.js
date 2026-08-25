@@ -12,6 +12,7 @@ const audit = require('../utils/audit');
 const { computeWorkedHours } = require('../utils/shiftStatus');
 const { businessDate, businessDateTime, businessTime, DEFAULT_TZ } = require('../utils/tz');
 const { restrictToApproved } = require('../utils/attendanceEngine');
+const deviceAnomalies = require('../utils/deviceAnomalies');
 
 // Supervisor scoping now filters on the log's own denormalised `workLocation`
 // rather than first resolving every employee id at that site and passing a
@@ -577,7 +578,8 @@ router.get('/anomalies', auth, requireAdminOrHr,
 
       const base = applyScope({ date: { $gte: since, $lte: today } }, req);
 
-      const [lowConfidence, farFromSite, manualHeavy, longSessions, overtimeLeaders] = await Promise.all([
+      const [lowConfidence, farFromSite, manualHeavy, longSessions, overtimeLeaders,
+             sharedDevices, flaggedLocations] = await Promise.all([
         // Matches that only just cleared the threshold.
         AttendanceLog.find({ ...base, confidence: { $ne: null, $lt: 0.55 } })
           .populate('employee', 'name employeeId')
@@ -607,6 +609,9 @@ router.get('/anomalies', auth, requireAdminOrHr,
           { $match: { overtimeHours: { $gt: 0 } } },
           { $sort: { overtimeHours: -1 } }, { $limit: 10 },
         ]),
+        // Fraud signals specific to people scanning from their own phones.
+        deviceAnomalies.sharedDevices(base),
+        deviceAnomalies.flaggedLocations(base),
       ]);
 
       const nameFor = async (rows) => {
@@ -624,6 +629,8 @@ router.get('/anomalies', auth, requireAdminOrHr,
         heavyManualEntry: await nameFor(manualHeavy),
         suspiciouslyLongSessions: longSessions,
         overtimeLeaders: await nameFor(overtimeLeaders),
+        sharedDevices,
+        flaggedLocations,
       });
     } catch (error) {
       console.error('[Attendance/Anomalies]', error.message);

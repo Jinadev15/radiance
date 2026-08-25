@@ -156,6 +156,7 @@ function enforceGeofence(employee, latitude, longitude, verb) {
  */
 async function openSession({
   employee, at, geo, confidence, margin, livenessScore, source, timeZone = DEFAULT_TZ, notes = null,
+  deviceId = null, accuracy = null, locationFlags = [],
 }) {
   const date = businessDate(at, timeZone);
   const status = computeClockInStatus(at, employee.shiftTemplate, timeZone);
@@ -175,6 +176,9 @@ async function openSession({
         clockInLatitude: geo ? geo.latitude : null,
         clockInLongitude: geo ? geo.longitude : null,
         clockInDistanceMeters: geo ? geo.distanceMeters : null,
+        clockInAccuracyMeters: accuracy,
+        deviceId,
+        locationFlags,
         status,
         confidence,
         matchMargin: margin,
@@ -201,7 +205,7 @@ async function openSession({
 }
 
 /** Close an open session, computing the payroll breakdown once. */
-async function closeSession({ session, employee, at, geo, timeZone = DEFAULT_TZ }) {
+async function closeSession({ session, employee, at, geo, timeZone = DEFAULT_TZ, accuracy = null }) {
   const hours = computeWorkedHours({
     clockInTime: session.clockInTime,
     clockOutTime: at,
@@ -213,6 +217,7 @@ async function closeSession({ session, employee, at, geo, timeZone = DEFAULT_TZ 
   session.clockOutLatitude = geo ? geo.latitude : null;
   session.clockOutLongitude = geo ? geo.longitude : null;
   session.clockOutDistanceMeters = geo ? geo.distanceMeters : null;
+  session.clockOutAccuracyMeters = accuracy;
 
   // A LATE clock-in stays LATE — leaving early doesn't undo arriving late,
   // and overwriting it would lose the more important fact.
@@ -234,6 +239,49 @@ async function closeSession({ session, employee, at, geo, timeZone = DEFAULT_TZ 
 
   await session.save();
   return session;
+}
+
+/**
+ * Refuse a clock-in from a phone that already has someone else clocked in.
+ *
+ * Employees scan from their own phones, so a handset is not tied to a person.
+ * Face recognition already stops A clocking in *as* B. What this stops is one
+ * person walking the floor clocking in a dozen colleagues using photos or
+ * videos of them — the anti-spoofing model catches only about half of replay
+ * attempts, so that gap is real, and forcing an attacker onto a dozen
+ * separate handsets is meaningful friction.
+ *
+ * The cost is honest and worth stating: two people who genuinely share a
+ * household phone cannot both be clocked in at once. The second person is
+ * told exactly what to do, and a supervisor override
+ * (POST /attendance/override) is the escape hatch if they have no other
+ * device.
+ *
+ * `deviceId` is not a credential — it is a random value the browser stores
+ * and anyone can clear. This is fraud friction, not authentication.
+ */
+async function assertDeviceFree(deviceId, employeeId, now = new Date()) {
+  if (!deviceId) return; // nothing to enforce against
+  const lookback = new Date(now.getTime() - OPEN_SESSION_LOOKBACK_HOURS * 60 * 60 * 1000);
+
+  const occupied = await AttendanceLog.findOne({
+    deviceId,
+    clockOutTime: null,
+    clockInTime: { $gte: lookback },
+    employee: { $ne: employeeId },
+  })
+    .populate('employee', 'name employeeId')
+    .sort({ clockInTime: -1 });
+
+  if (!occupied) return;
+
+  const who = occupied.employee ? occupied.employee.name : 'Another employee';
+  throw engineError(
+    409,
+    `${who} is still clocked in on this phone. They need to clock out first, ` +
+    'or please use a different phone. If neither is possible, ask your supervisor to record your attendance.',
+    'DEVICE_IN_USE'
+  );
 }
 
 /**
@@ -318,6 +366,7 @@ module.exports = {
   openSession,
   closeSession,
   assertNotDoubleTap,
+  assertDeviceFree,
   dayTotals,
   restrictToApproved,
   engineError,

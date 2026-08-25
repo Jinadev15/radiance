@@ -10,6 +10,7 @@ const { withLock } = require('../utils/mongoLock');
 const ml = require('../utils/mlServiceCall');
 const { validateNationalId, hashNationalId, last4 } = require('../utils/nationalId');
 const { requireKioskDevice } = require('../middleware/kiosk');
+const { sitesAtLocation } = require('../utils/siteResolver');
 const audit = require('../utils/audit');
 const rosterCache = require('../utils/rosterCache');
 const { notifyAdmins } = require('../utils/notify');
@@ -104,11 +105,21 @@ router.post('/',
         return res.status(503).json({ error: 'Database unavailable. Please try again shortly.' });
       }
 
-      // Site resolution, in order of trustworthiness: the authenticated
-      // kiosk's own site, then an explicit choice from the dashboard/kiosk
-      // form. A kiosk lives at a site, so its token is the better source.
-      const requestedSite = req.body.workLocation || null;
-      const workLocation = req.kioskSiteId || requestedSite || null;
+      // Site resolution. The explicit choice wins: registration happens once,
+      // usually with a supervisor standing there, and the person knows which
+      // site they were hired for better than a GPS fix taken indoors does.
+      //
+      // GPS is only a fallback for the phone form, and only when the
+      // coordinates land inside exactly one site — an ambiguous fix between
+      // two overlapping fences is worse than asking.
+      let workLocation = req.body.workLocation || null;
+      if (!workLocation) {
+        const { latitude, longitude } = req.body;
+        if (latitude !== undefined && latitude !== null && longitude !== undefined && longitude !== null) {
+          const here = await sitesAtLocation(latitude, longitude);
+          if (here.length === 1) workLocation = here[0]._id;
+        }
+      }
 
       // Fail closed on the site. Without one, the employee has no geofence
       // and can never be marked late — the two controls that make this

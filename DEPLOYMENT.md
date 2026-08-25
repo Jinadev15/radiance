@@ -124,30 +124,30 @@ scans are processed concurrently.
 Both must be on a paid plan regardless, so they stop sleeping — a sleeping
 service means the first employee of the morning waits for a cold start.
 
-### Kiosk device tokens are required at this scale
+### Site geofences must be accurate — they now do two jobs
 
-`KIOSK_DEVICES` is not just a security control here, it is a correctness and
-performance one. A kiosk that identifies its site makes each scan compare
-against that site's roster (~200 people at the largest site) instead of all
-4,000. Fewer candidates means both a faster scan and a materially lower chance
-of a false match.
+Employees clock in from their own phones, so there is no per-site kiosk to
+identify where a scan came from. The site is derived from the phone's GPS
+instead (`backend/utils/siteResolver.js`), which makes each site's
+`latitude` / `longitude` / `radiusMeters` load-bearing twice over:
 
-Generate one token per site:
+1. **Correctness.** A scan outside every geofence is refused outright, with
+   the distance to the nearest site in the message.
+2. **Accuracy and speed.** Resolving the site scopes face matching to that
+   site's roster (~200 at the largest) instead of all 4,000. Fewer candidates
+   is both faster and materially less likely to produce a false match.
 
-```bash
-openssl rand -hex 32
-```
+So before go-live, walk each site and check the recorded coordinates against
+where employees actually stand when they scan — a fence centred on the
+building's postal address rather than its gate will reject everyone.
 
-Then set on the backend, one entry per kiosk:
+Set `radiusMeters` generously enough to absorb indoor GPS drift (50 m+ is
+normal on a phone inside a building). Overlapping fences are fine and
+supported: a point inside two sites matches against both rosters.
 
-```
-KIOSK_DEVICES=<siteId>:<token>,<siteId>:<token>,...
-KIOSK_ENFORCE=true
-```
-
-and on each kiosk's own Vercel project, `VITE_KIOSK_TOKEN` plus
-`VITE_KIOSK_SITE_ID`. Set `KIOSK_ENFORCE=true` only once every kiosk carries
-its token, or you will lock all of them out at once.
+`KIOSK_DEVICES`, `KIOSK_TOKEN` and `KIOSK_ENFORCE` are **obsolete** — if
+they are still set on the backend from an earlier deployment, remove them.
+They no longer do anything.
 
 ### What was measured
 

@@ -41,7 +41,14 @@ export default function FaceCapture({ onCapture, onBack }) {
       watchId = navigator.geolocation.watchPosition(
         (pos) => {
           if (cancelled) return;
-          setLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
+          // accuracy travels with the fix so the backend can tell a solid
+          // GPS lock from a 2km cell-tower guess, and flag the implausible
+          // sub-metre readings that mock-location apps report.
+          setLocation({
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            accuracy: typeof pos.coords.accuracy === 'number' ? pos.coords.accuracy : null,
+          });
           setLocationDenied(false);
         },
         () => {

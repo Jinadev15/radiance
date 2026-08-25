@@ -24,9 +24,10 @@ if (process.env.NODE_ENV === 'production') {
   if (!process.env.ML_SERVICE_TOKEN) {
     console.warn('[Boot] ML_SERVICE_TOKEN is not set — the face recognition service is reachable by anyone who finds its URL.');
   }
-  if (!kioskStatus().configured) {
-    console.warn('[Boot] No KIOSK_DEVICES/KIOSK_TOKEN configured — the scanner is reachable by anyone who finds its URL.');
-  }
+  // Personal-device model: the scanner is intentionally open. Clocking in
+  // still requires an enrolled face inside a site geofence, and
+  // self-registration waits on HR approval.
+  console.log('[Boot] Kiosk model: personal devices (face + GPS); scanner endpoints are public by design.');
 }
 
 const app = express();

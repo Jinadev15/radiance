@@ -36,6 +36,23 @@ const attendanceLogSchema = new mongoose.Schema({
   // hard blocks.
   clockInDistanceMeters: { type: Number, default: null },
   clockOutDistanceMeters: { type: Number, default: null },
+  // The browser's own accuracy estimate for the fix, in metres. Recorded
+  // because it is one of the few signals that distinguishes a real GPS
+  // reading from a mocked one.
+  clockInAccuracyMeters: { type: Number, default: null },
+  clockOutAccuracyMeters: { type: Number, default: null },
+
+  // Which phone the scan came from. NOT a security credential — it is a
+  // random id the browser stores and anyone can clear. It exists so one
+  // handset cannot hold several people clocked in at once, and so "twelve
+  // employees scanned from one device today" is visible to HR.
+  deviceId: { type: String, default: null, index: true },
+
+  // Advisory signals that the reported position may not be genuine (see
+  // utils/locationTrust.js). Never blocks a scan on its own: a false fraud
+  // accusation against an honest worker is worse than a missed one, and GPS
+  // is genuinely erratic indoors.
+  locationFlags: { type: [String], default: [] },
 
   status: {
     type: String,

@@ -36,9 +36,10 @@ router.post('/',
         return res.status(400).json({ error: 'To date cannot be before the from date.' });
       }
 
-      const { matchedEmployee } = await identifyAndVerify(frames, 'CLOCK_IN', {
-        workLocationId: req.kioskSiteId || null,
-      });
+      // Matched against the whole roster rather than one site: someone
+      // applying for leave is very often not at their site when
+      // they do it.
+      const { matchedEmployee } = await identifyAndVerify(frames, 'CLOCK_IN', {});
 
       const request = new LeaveRequest({
         employee: matchedEmployee._id,
